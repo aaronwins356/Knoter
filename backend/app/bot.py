@@ -4,7 +4,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
-from .execution.order_manager import OrderManager
+from .execution_engine.order_manager import OrderManager
 from .logging_utils import log_event
 from .models import DecisionRecord, MarketSnapshot, Position, TradingMode
 from .storage import log_activity, log_decision, upsert_position
@@ -21,7 +21,7 @@ def build_advisor_prompt(snapshot: MarketSnapshot, action: str, rationale: str, 
         f"Scores: volatility={snapshot.volatility_pct:.2f}%, spread={snapshot.spread_pct:.2f}%, "
         f"liquidity={snapshot.liquidity_score:.1f}, overall={snapshot.overall_score:.1f}\n"
         f"Risk state: {risk_state}\n"
-        "Provide 3-6 bullet explanations and 1-3 risk warnings. Optional suggestions only."
+        "Return JSON with sentiment (-1..1), confidence (0..1), notes, and veto (true/false)."
     )
 
 
@@ -110,6 +110,13 @@ async def maybe_open_trade(state) -> None:
         )
         advisory = _safe_advisor(state, snapshot, decision.action, decision.rationale)
         record_decision(state, snapshot, decision.action, decision.rationale, advisory=advisory)
+        if advisory and advisory.get("veto") and advisory.get("confidence", 0) > 0.7:
+            entry = state.add_activity(
+                f"Advisor vetoed trade on {snapshot.name} (confidence {advisory.get('confidence'):.2f}).",
+                category="warning",
+            )
+            log_activity(entry)
+            continue
         if decision.action != "ENTER" or not decision.side or decision.price is None:
             continue
 

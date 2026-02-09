@@ -5,7 +5,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Deque, Dict, List, Optional
 
-from .broker.kalshi import KalshiBroker, KalshiClient
+from .broker.kalshi import KalshiBroker
+from .kalshi_client import KalshiClient
 from .broker.paper import PaperBroker
 from .config import load_config
 from .models import ActivityEntry, BotConfig, MarketSnapshot, Order, Position, ScanSnapshot, StatusSnapshot, TradingMode
