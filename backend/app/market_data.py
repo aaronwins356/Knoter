@@ -8,15 +8,37 @@ from typing import Any, List, Optional
 
 @dataclass(frozen=True)
 class MarketInfo:
-    market_id: str
-    name: str
+    ticker: str
+    title: str
+    close_ts: Optional[int]
+    status: str
     category: str
+    raw_payload: dict
+
+
+@dataclass(frozen=True)
+class Quote:
+    bid: float
+    ask: float
+    mid: float
+    last: float
+    spread_pct: float
+    valid: bool
+    reason: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class MarketQuote:
+    quote: Quote
+    volume: float
+    bid_depth: float
+    ask_depth: float
     time_to_resolution_minutes: float
 
 
 @dataclass(frozen=True)
 class DemoMarket:
-    market_id: str
+    ticker: str
     name: str
     category: str
     base_price: float
@@ -26,7 +48,7 @@ class DemoMarket:
 
 DEMO_MARKETS: List[DemoMarket] = [
     DemoMarket(
-        market_id="NBA-LAL-GSW",
+        ticker="NBA-LAL-GSW",
         name="Lakers vs Warriors - Winner",
         category="sports",
         base_price=0.56,
@@ -34,7 +56,7 @@ DEMO_MARKETS: List[DemoMarket] = [
         time_to_resolution_minutes=18.0 * 60,
     ),
     DemoMarket(
-        market_id="ELECT-2024",
+        ticker="ELECT-2024",
         name="Election result - Margin",
         category="politics",
         base_price=0.42,
@@ -42,7 +64,7 @@ DEMO_MARKETS: List[DemoMarket] = [
         time_to_resolution_minutes=96.0 * 60,
     ),
     DemoMarket(
-        market_id="FED-RATE",
+        ticker="FED-RATE",
         name="Fed rate hike",
         category="finance",
         base_price=0.38,
@@ -50,7 +72,7 @@ DEMO_MARKETS: List[DemoMarket] = [
         time_to_resolution_minutes=40.0 * 60,
     ),
     DemoMarket(
-        market_id="EARN-NVDA",
+        ticker="EARN-NVDA",
         name="NVIDIA earnings beat",
         category="company",
         base_price=0.63,
@@ -58,7 +80,7 @@ DEMO_MARKETS: List[DemoMarket] = [
         time_to_resolution_minutes=12.0 * 60,
     ),
     DemoMarket(
-        market_id="OIL-PRICE",
+        ticker="OIL-PRICE",
         name="Oil above $90",
         category="finance",
         base_price=0.29,
@@ -66,7 +88,7 @@ DEMO_MARKETS: List[DemoMarket] = [
         time_to_resolution_minutes=55.0 * 60,
     ),
     DemoMarket(
-        market_id="NBA-PTS",
+        ticker="NBA-PTS",
         name="Total points over 215.5",
         category="sports",
         base_price=0.51,
@@ -98,6 +120,16 @@ def _first_present(payload: dict, keys: List[str]) -> Optional[float]:
     return None
 
 
+def _extract_price(payload: dict, dollars_keys: List[str], cents_keys: List[str]) -> Optional[float]:
+    dollars = _first_present(payload, dollars_keys)
+    if dollars is not None:
+        return float(dollars)
+    cents = _first_present(payload, cents_keys)
+    if cents is None:
+        return None
+    return float(cents) / 100.0
+
+
 def _normalize_timestamp(ts: Optional[float]) -> Optional[int]:
     if ts is None:
         return None
@@ -107,30 +139,67 @@ def _normalize_timestamp(ts: Optional[float]) -> Optional[int]:
     return int(value)
 
 
-def normalize_market_prices(payload: dict, now_ts: Optional[int] = None) -> dict:
-    bid = _first_present(payload, ["yes_bid_dollars", "yes_bid", "bid_dollars", "bid_price", "bid"])
-    ask = _first_present(payload, ["yes_ask_dollars", "yes_ask", "ask_dollars", "ask_price", "ask"])
-    last = _first_present(payload, ["last_price_dollars", "last_price", "last"])
-    mid = _first_present(payload, ["mid_price_dollars", "mid_price"])
+def normalize_quote(payload: dict) -> Quote:
+    bid = _extract_price(
+        payload,
+        ["yes_bid_dollars", "bid_dollars", "bid_price_dollars"],
+        ["yes_bid", "bid", "bid_price"],
+    )
+    ask = _extract_price(
+        payload,
+        ["yes_ask_dollars", "ask_dollars", "ask_price_dollars"],
+        ["yes_ask", "ask", "ask_price"],
+    )
+    mid = _extract_price(
+        payload,
+        ["mid_price_dollars", "mid_dollars"],
+        ["mid_price"],
+    )
+    last = _extract_price(
+        payload,
+        ["last_price_dollars", "last_dollars"],
+        ["last_price", "last"],
+    )
 
     if bid is not None and ask is not None:
         mid = (bid + ask) / 2
-    elif mid is None:
-        mid = last if last is not None else 0.5
+    if mid is None:
+        mid = last
 
-    if bid is None and ask is not None:
-        bid = ask
-    if ask is None and bid is not None:
-        ask = bid
+    if bid is None and mid is not None:
+        bid = mid
+    if ask is None and mid is not None:
+        ask = mid
+    if last is None and mid is not None:
+        last = mid
 
-    bid = float(bid) if bid is not None else 0.0
-    ask = float(ask) if ask is not None else bid
+    if bid is None or ask is None or mid is None or last is None:
+        return Quote(bid=0.0, ask=0.0, mid=0.0, last=0.0, spread_pct=0.0, valid=False, reason="missing_quote")
+
+    bid = float(bid)
+    ask = float(ask)
     mid = float(mid)
-    last = float(last if last is not None else mid)
+    last = float(last)
+    spread_pct = 0.0
+    if mid > 0 and ask >= bid:
+        spread_pct = ((ask - bid) / max(mid, 0.0001)) * 100
 
+    return Quote(
+        bid=round(bid, 4),
+        ask=round(ask, 4),
+        mid=round(mid, 4),
+        last=round(last, 4),
+        spread_pct=round(spread_pct, 4),
+        valid=True,
+    )
+
+
+def normalize_market_meta(payload: dict, now_ts: Optional[int] = None) -> dict:
     volume = _first_present(payload, ["volume", "volume_dollars", "open_interest"]) or 0.0
+    bid_depth = _first_present(payload, ["bid_depth", "yes_bid_depth", "bid_volume"]) or 0.0
+    ask_depth = _first_present(payload, ["ask_depth", "yes_ask_depth", "ask_volume"]) or 0.0
     close_ts = _normalize_timestamp(
-        _first_present(payload, ["close_ts", "close_time", "settlement_ts"])
+        _first_present(payload, ["close_ts", "close_time", "settlement_ts", "close_timestamp"])
     )
     if now_ts is None:
         now_ts = int(datetime.now(tz=timezone.utc).timestamp())
@@ -140,17 +209,10 @@ def normalize_market_prices(payload: dict, now_ts: Optional[int] = None) -> dict
     elif minutes_to_resolution is None:
         minutes_to_resolution = 60.0
 
-    spread_pct = 0.0
-    if mid > 0 and ask >= bid:
-        spread_pct = ((ask - bid) / max(mid, 0.0001)) * 100
-
     return {
-        "bid": round(bid, 4),
-        "ask": round(ask, 4),
-        "mid": round(mid, 4),
-        "last": round(last, 4),
-        "spread_pct": round(spread_pct, 4),
         "volume": float(volume),
+        "bid_depth": float(bid_depth),
+        "ask_depth": float(ask_depth),
         "minutes_to_resolution": float(minutes_to_resolution),
-        "settlement_ts": close_ts,
+        "close_ts": close_ts,
     }

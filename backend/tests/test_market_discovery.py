@@ -6,8 +6,10 @@ from app.broker.kalshi import KalshiBroker
 class DummyClient:
     def __init__(self) -> None:
         self.market_params = []
+        self.series_params = []
 
     def list_series(self, params=None, fetch_all=True):
+        self.series_params.append(params or {})
         return []
 
     def list_events(self, params=None, fetch_all=True):
@@ -43,6 +45,18 @@ class SeriesClient(DummyClient):
         self.events_params.append(params or {})
         return [{"ticker": "EVT-2024"}]
 
+    def list_markets(self, params=None, fetch_all=True):
+        self.market_params.append(params or {})
+        return [
+            {
+                "ticker": "TEST-MKT",
+                "title": "Election 2024 Winner",
+                "status": "open",
+                "close_ts": int(time.time()) + 3600,
+                "event_ticker": "EVT-2024",
+            }
+        ]
+
 
 def test_market_discovery_fallback_builds_time_window():
     client = DummyClient()
@@ -54,6 +68,7 @@ def test_market_discovery_fallback_builds_time_window():
     assert params["status"] == "open"
     assert params["min_close_ts"] >= start
     assert params["max_close_ts"] >= params["min_close_ts"]
+    assert params["limit"] == 200
 
 
 def test_market_discovery_uses_series_and_events():
@@ -62,4 +77,5 @@ def test_market_discovery_uses_series_and_events():
     markets = broker.list_markets("politics", 4)
     assert markets
     assert client.events_params[0]["series_ticker"] == "SER-2024"
-    assert client.market_params[0]["event_ticker"] == "EVT-2024"
+    assert client.events_params[0]["status"] == "open"
+    assert client.market_params[0]["status"] == "open"

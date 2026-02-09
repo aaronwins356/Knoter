@@ -12,6 +12,7 @@ from .config import load_config
 from .models import ActivityEntry, BotConfig, MarketSnapshot, Order, Position, ScanSnapshot, StatusSnapshot, TradingMode
 from .openai_client import OpenAIClient
 from .risk.risk_manager import RiskManager
+from .execution_engine.order_manager import OrderManager
 from .storage import fetch_activity, init_db
 
 
@@ -35,6 +36,7 @@ class BotState:
         self.paper_broker = PaperBroker()
         self.openai = OpenAIClient()
         self.risk = RiskManager(self.config.risk_limits)
+        self.order_manager = OrderManager(self.broker, self.config)
         self.running: bool = False
         self.killed: bool = False
         self.task = None
@@ -45,8 +47,12 @@ class BotState:
         self.activity: Deque[ActivityEntry] = deque(fetch_activity(limit=20), maxlen=50)
         self.trades_executed = 0
         self.event_pnl_pct = 0.0
+        self.realized_pnl_pct = 0.0
+        self.unrealized_pnl_pct = 0.0
         self.sentiment_label = "Waiting"
         self.next_action = "Configure bot"
+        self.last_reconcile_ts: Optional[datetime] = None
+        self.last_fill_ts_ms: Optional[int] = None
 
     @property
     def broker(self):
@@ -64,6 +70,8 @@ class BotState:
             trades_executed=self.trades_executed,
             open_positions=len([pos for pos in self.positions.values() if pos.status == "open"]),
             event_pnl_pct=self.event_pnl_pct,
+            realized_pnl_pct=self.realized_pnl_pct,
+            unrealized_pnl_pct=self.unrealized_pnl_pct,
             high_vol_count=len(
                 [market for market in (self.last_scan.markets if self.last_scan else []) if market.qualifies]
             ),

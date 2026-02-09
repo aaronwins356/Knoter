@@ -4,11 +4,11 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
-from .execution_engine.order_manager import OrderManager
 from .logging_utils import log_event
 from .models import DecisionRecord, MarketSnapshot, Order, Position, TradingMode
-from .storage import log_activity, log_decision, upsert_order, upsert_position
+from .storage import fetch_fills, log_activity, log_decision, log_fill, upsert_order, upsert_position
 from .strategy.engine import compute_pnl_pct, config_hash, decide_entry, decide_exit
+from .strategy.pnl import compute_realized_pnl_pct, compute_unrealized_pnl_pct
 from .strategy.scanner import scan_markets
 from .state import MarketState
 
@@ -103,7 +103,7 @@ async def maybe_open_trade(state) -> None:
     pick_count = 2 if max_new_positions >= 2 else 1
     selections = qualifying[:pick_count]
 
-    order_manager = OrderManager(state.broker, state.config)
+    order_manager = state.order_manager
     for snapshot in selections:
         if snapshot.market_id in {pos.market_id for pos in positions}:
             continue
@@ -189,7 +189,7 @@ async def maybe_open_trade(state) -> None:
 
 async def update_positions(state) -> None:
     now = datetime.now(tz=timezone.utc)
-    order_manager = OrderManager(state.broker, state.config)
+    order_manager = state.order_manager
     for position in list(state.positions.values()):
         if position.status != "open":
             continue
@@ -244,33 +244,81 @@ async def update_positions(state) -> None:
         upsert_position(position)
 
 
+def _parse_fill_timestamp_ms(payload: dict) -> Optional[int]:
+    raw = payload.get("created_time") or payload.get("timestamp") or payload.get("ts")
+    if raw is None:
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if value < 1e12:
+        value *= 1000
+    return int(value)
+
+
+def _refresh_pnl(state) -> None:
+    fills = fetch_fills()
+    state.realized_pnl_pct = compute_realized_pnl_pct(fills)
+    state.unrealized_pnl_pct = compute_unrealized_pnl_pct(state.positions.values())
+    state.event_pnl_pct = round(state.realized_pnl_pct + state.unrealized_pnl_pct, 4)
+
+
 def reconcile_broker_state(state) -> None:
     if state.config.trading_mode != TradingMode.LIVE:
+        _refresh_pnl(state)
+        return
+    now = datetime.now(tz=timezone.utc)
+    if state.last_reconcile_ts and (now - state.last_reconcile_ts).total_seconds() < state.config.cadence_seconds:
+        _refresh_pnl(state)
         return
     try:
-        open_orders = state.broker.get_open_orders()
+        payload = state.order_manager.reconcile_broker(state.last_fill_ts_ms)
+        open_orders = payload.get("orders", [])
+        broker_positions = payload.get("positions", [])
+        broker_fills = payload.get("fills", [])
     except Exception as exc:  # noqa: BLE001
         log_event("broker_orders_error", {"error": str(exc)})
         open_orders = []
-    try:
-        broker_positions = state.broker.get_positions()
-    except Exception as exc:  # noqa: BLE001
-        log_event("broker_positions_error", {"error": str(exc)})
-        return
+        broker_positions = []
+        broker_fills = []
+    state.last_reconcile_ts = now
 
-    now = datetime.now(tz=timezone.utc)
+    for fill in broker_fills:
+        fill_ts = _parse_fill_timestamp_ms(fill)
+        if fill_ts:
+            state.last_fill_ts_ms = max(state.last_fill_ts_ms or 0, fill_ts)
+        fill_side = fill.get("side", "yes")
+        fill_price = (
+            fill.get("price_dollars")
+            or fill.get("price")
+            or (fill.get("yes_price_dollars") if fill_side == "yes" else fill.get("no_price_dollars"))
+            or 0.0
+        )
+        log_fill(
+            fill.get("order_id", ""),
+            fill.get("ticker") or fill.get("market_ticker") or fill.get("market_id") or "",
+            fill.get("action", "buy"),
+            fill_side,
+            float(fill_price),
+            int(fill.get("count") or fill.get("size") or 0),
+        )
     for order in open_orders:
         order_id = order.get("order_id") or order.get("id")
         market_id = order.get("ticker") or order.get("market_ticker") or order.get("market_id")
         if not order_id or not market_id:
             continue
+        side = order.get("side", "yes")
+        price = order.get("price_dollars") or order.get("price")
+        if price is None:
+            price = order.get("yes_price_dollars") if side == "yes" else order.get("no_price_dollars")
         upsert_order(
             Order(
                 order_id=order_id,
                 market_id=market_id,
                 action=order.get("action", "buy"),
-                side=order.get("side", "yes"),
-                price=float(order.get("price") or order.get("price_dollars") or 0.0),
+                side=side,
+                price=float(price or 0.0),
                 qty=int(order.get("count") or order.get("size") or 0),
                 status=order.get("status", "open"),
                 created_at=now,
@@ -308,6 +356,7 @@ def reconcile_broker_state(state) -> None:
             )
             state.positions[position.position_id] = position
             upsert_position(position)
+    _refresh_pnl(state)
 
 
 def handle_kill_switch(state) -> None:

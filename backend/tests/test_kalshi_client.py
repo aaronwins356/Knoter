@@ -19,7 +19,16 @@ def test_client_uses_trade_api_endpoints():
             return {}
 
     client = Recorder()
-    client.place_order({"ticker": "TEST", "action": "buy", "side": "yes", "type": "limit", "price": 0.5, "size": 1})
+    client.place_order(
+        {
+            "ticker": "TEST",
+            "action": "buy",
+            "side": "yes",
+            "type": "limit",
+            "yes_price_dollars": "0.5000",
+            "count": 1,
+        }
+    )
     client.cancel_order("abc")
     client.get_open_orders()
     client.get_positions()

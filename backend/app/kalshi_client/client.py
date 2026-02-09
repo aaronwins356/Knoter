@@ -227,21 +227,27 @@ class KalshiClient:
     def format_order_payload(
         self, ticker: str, action: str, side: str, price: float, qty: int, order_type: str = "limit"
     ) -> Dict[str, Any]:
-        return {
+        price_str = f"{float(price):.4f}"
+        payload = {
             "ticker": ticker,
             "action": action,
             "side": side,
             "type": order_type,
-            "price": round(price, 4),
-            "count": qty,
+            "count": int(qty),
         }
+        if side == "yes":
+            payload["yes_price_dollars"] = price_str
+        else:
+            payload["no_price_dollars"] = price_str
+        return payload
 
     def _validate_order_payload(self, payload: Dict[str, Any]) -> None:
         ticker = payload.get("ticker")
         action = payload.get("action")
         side = payload.get("side")
-        qty = payload.get("count") or payload.get("size")
-        price = payload.get("price")
+        qty = payload.get("count") or payload.get("count_fp") or payload.get("size")
+        yes_price = payload.get("yes_price_dollars")
+        no_price = payload.get("no_price_dollars")
         if not ticker or not isinstance(ticker, str):
             raise ValueError("Order payload missing ticker")
         if action not in {"buy", "sell"}:
@@ -250,7 +256,14 @@ class KalshiClient:
             raise ValueError("Order payload side must be yes or no")
         if qty is None or int(qty) <= 0:
             raise ValueError("Order payload count must be positive")
-        if price is None or not (0.0 <= float(price) <= 1.0):
+        price_value = yes_price if side == "yes" else no_price
+        if price_value is None:
+            raise ValueError("Order payload missing yes_price_dollars/no_price_dollars")
+        try:
+            price_float = float(price_value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Order payload price must be a decimal string") from exc
+        if not (0.0 <= price_float <= 1.0):
             raise ValueError("Order payload price must be between 0 and 1 dollars")
         log_event(
             "kalshi_order_request",
@@ -258,7 +271,7 @@ class KalshiClient:
                 "ticker": ticker,
                 "action": action,
                 "side": side,
-                "price": round(float(price), 4),
+                "price": round(price_float, 4),
                 "count": int(qty),
                 "type": payload.get("type"),
             },
