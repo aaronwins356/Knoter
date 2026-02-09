@@ -30,3 +30,12 @@ def test_risk_manager_cooldown_enforced():
     allowed, reason = manager.can_trade()
     assert allowed is False
     assert "Cooldown" in reason
+
+
+def test_risk_manager_blocks_on_max_positions():
+    limits = RiskLimits(max_concurrent_positions=1)
+    manager = RiskManager(limits)
+    manager.update_exposure(exposure_contracts=0, exposure_dollars=0.0, active_positions=1)
+    allowed, reason = manager.can_trade()
+    assert allowed is False
+    assert "positions" in reason.lower()

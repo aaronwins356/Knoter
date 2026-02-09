@@ -40,6 +40,7 @@ const elements = {
   start: document.getElementById("start-bot"),
   stop: document.getElementById("stop-bot"),
   killBot: document.getElementById("kill-bot"),
+  flattenAll: document.getElementById("flatten-all"),
   modePill: document.getElementById("mode-pill"),
   liveWarning: document.getElementById("live-warning"),
   openaiStatus: document.getElementById("openai-status"),
@@ -446,6 +447,22 @@ const stopBot = async () => {
   }
 };
 
+const flattenAll = async () => {
+  if (!confirm("Flatten all positions and cancel open orders?")) return;
+  const response = await fetch("/positions/flatten", { method: "POST" });
+  if (!response.ok) {
+    alert("Flatten failed.");
+    return;
+  }
+  const data = await response.json();
+  state.activity.unshift({
+    timestamp: new Date().toISOString(),
+    message: `Flatten requested. Closed ${data.closed_positions.length} positions, cancelled ${data.cancelled_orders.length} orders.`,
+    category: data.errors && data.errors.length > 0 ? "warning" : "info",
+  });
+  renderActivity();
+};
+
 const killBot = async () => {
   const response = await fetch("/bot/kill", { method: "POST" });
   if (response.ok) {
@@ -567,6 +584,7 @@ const handleFilter = (event) => {
 elements.start.addEventListener("click", startBot);
 elements.stop.addEventListener("click", stopBot);
 elements.killBot.addEventListener("click", killBot);
+elements.flattenAll.addEventListener("click", flattenAll);
 elements.saveConfig.addEventListener("click", saveConfig);
 elements.applyMode.addEventListener("click", applyMode);
 elements.table.addEventListener("click", handleTableClick);

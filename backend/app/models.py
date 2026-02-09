@@ -211,9 +211,10 @@ class KalshiStatus(BaseModel):
 
 
 class AdvisorOutput(BaseModel):
-    explanations: List[str]
-    warnings: List[str]
-    suggestions: List[str] = Field(default_factory=list)
+    sentiment: float = Field(ge=-1.0, le=1.0)
+    confidence: float = Field(ge=0.0, le=1.0)
+    notes: str
+    veto: bool = False
 
 
 class DryRunResult(BaseModel):

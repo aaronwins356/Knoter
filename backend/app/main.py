@@ -13,6 +13,7 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from .bot import run_bot
+from .execution_engine.order_manager import OrderManager
 from .config import load_config, save_config
 from .logging_utils import configure_logging, log_event
 from .models import BotConfig, DecisionRecord, DryRunResult, HealthStatus, KalshiStatus, TradingMode
@@ -115,6 +116,8 @@ async def update_config(payload: Dict[str, Any]) -> BotConfig:
             raise HTTPException(status_code=400, detail="Live trading disabled on server")
         if config.live_confirm != "ENABLE LIVE TRADING":
             raise HTTPException(status_code=400, detail="Missing live trading confirmation")
+        if state.kalshi_client.environment_label() != "live":
+            raise HTTPException(status_code=400, detail="Kalshi environment is not live")
     state.config = config
     state.risk = RiskManager(state.config.risk_limits)
     state.kalshi_broker.live_gate_enabled = state.config.live_trading_enabled
@@ -251,6 +254,56 @@ async def close_position(position_id: str) -> Dict[str, str]:
     except Exception as exc:  # noqa: BLE001
         log_event("position_close_error", {"position_id": position_id, "error": str(exc)})
         raise HTTPException(status_code=400, detail="Unable to close position") from exc
+
+
+@app.post("/positions/flatten")
+async def flatten_all() -> Dict[str, Any]:
+    order_ids: list[str] = []
+    closed_positions: list[str] = []
+    errors: list[str] = []
+
+    try:
+        open_orders = state.broker.get_open_orders()
+    except Exception as exc:  # noqa: BLE001
+        log_event("flatten_orders_error", {"error": str(exc)})
+        open_orders = []
+
+    for order in open_orders:
+        order_id = order.get("order_id")
+        if not order_id:
+            continue
+        try:
+            state.broker.cancel_order(order_id)
+            order_ids.append(order_id)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"cancel:{order_id}:{exc}")
+
+    order_manager = OrderManager(state.broker, state.config)
+    for position in list(state.positions.values()):
+        if position.status != "open":
+            continue
+        market_state = state.market_state.get(position.market_id)
+        snapshot = market_state.last_snapshot if market_state else None
+        if not snapshot:
+            errors.append(f"close:{position.position_id}:missing_snapshot")
+            continue
+        try:
+            result = await order_manager.close_with_limit(
+                position.market_id,
+                position.side,
+                snapshot.bid,
+                snapshot.ask,
+                position.qty,
+            )
+            position.status = "closed"
+            position.closed_at = datetime.now(tz=timezone.utc)
+            upsert_position(position)
+            closed_positions.append(position.position_id)
+            log_event("flatten_position_closed", {"position_id": position.position_id, "order_id": result.order_id})
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"close:{position.position_id}:{exc}")
+
+    return {"cancelled_orders": order_ids, "closed_positions": closed_positions, "errors": errors}
 
 
 @app.post("/bot/dryrun", response_model=DryRunResult)

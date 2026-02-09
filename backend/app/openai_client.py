@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 from typing import Optional
 
 import requests
@@ -29,8 +30,9 @@ class OpenAIClient:
                     {
                         "role": "system",
                         "content": (
-                            "You are a trading advisor. Provide bullet explanations and risk warnings. "
-                            "Never recommend executing trades directly; only explain or suggest parameter tweaks."
+                            "You are a trading advisor. Respond ONLY with JSON in the exact format: "
+                            '{"sentiment": -1..1, "confidence": 0..1, "notes": "...", "veto": false}. '
+                            "Never recommend executing trades directly."
                         ),
                     },
                     {"role": "user", "content": prompt},
@@ -41,8 +43,8 @@ class OpenAIClient:
         )
         response.raise_for_status()
         content = response.json()["choices"][0]["message"]["content"].strip()
-        lines = [line.strip("- ") for line in content.splitlines() if line.strip()]
-        explanations = lines[:6] if lines else ["No advisory returned."]
-        warnings = [line for line in lines if "risk" in line.lower()][:3]
-        suggestions = [line for line in lines if "suggest" in line.lower()][:3]
-        return AdvisorOutput(explanations=explanations, warnings=warnings, suggestions=suggestions)
+        try:
+            data = json.loads(content)
+            return AdvisorOutput(**data)
+        except json.JSONDecodeError:
+            return AdvisorOutput(sentiment=0.0, confidence=0.0, notes="Advisor returned invalid JSON.", veto=False)

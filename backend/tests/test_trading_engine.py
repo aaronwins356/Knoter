@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 import asyncio
 
-from app.execution.order_manager import OrderManager
+from app.execution_engine.order_manager import OrderManager
 from app.models import BotConfig
 from app.strategy.engine import decide_entry, decide_exit
 

@@ -42,7 +42,7 @@ cp .env.example .env
 
 ```bash
 cd backend
-uvicorn app.main:app --reload --port 8000
+python -m dashboard.app
 ```
 
 The dashboard is served at http://localhost:8000.
@@ -54,10 +54,11 @@ not configured. This is intended for safe, testable validation of the risk logic
 
 ## Enabling Live Trading
 
-1. Set `KALSHI_API_KEY` in your `.env`.
+1. Set `KALSHI_API_KEY_ID` (or `KALSHI_API_KEY`) in your `.env`.
 2. Provide your RSA private key via **either** `KALSHI_PRIVATE_KEY_PATH` (preferred) **or** `KALSHI_PRIVATE_KEY_PEM`.
-3. Set `KNOTER_LIVE_TRADING_ENABLED=true` in your `.env` and restart the backend.
-4. In the dashboard, switch mode to LIVE and type the confirmation phrase **ENABLE LIVE TRADING**.
+3. Set `KALSHI_ENV=live` in your `.env`.
+4. Set `KNOTER_LIVE_TRADING_ENABLED=true` in your `.env` and restart the backend.
+5. In the dashboard, switch mode to LIVE and type the confirmation phrase **ENABLE LIVE TRADING**.
 
 > **Warning:** Live trading carries risk. No strategy guarantees returns. Always validate in paper mode first.
 
@@ -83,6 +84,13 @@ not configured. This is intended for safe, testable validation of the risk logic
 ```bash
 cd backend
 pytest
+```
+
+## Demo smoke test
+
+```bash
+cd backend
+python -m tools.smoke_test
 ```
 
 ## Risk Disclaimer

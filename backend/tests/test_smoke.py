@@ -15,6 +15,7 @@ def test_smoke_cycle_paper_broker():
     state.config.scoring.max_spread_pct = 50.0
     state.config.scoring.min_liquidity_score = 0.0
     state.config.exit.take_profit_pct = 1.0
+    state.config.entry.fee_pct = 0.0
 
     market_id = "DEMO-MKT"
     market_state = MarketState()
@@ -33,7 +34,7 @@ def test_smoke_cycle_paper_broker():
         bid_depth=300.0,
         ask_depth=300.0,
         volatility_pct=2.0,
-        spread_pct=3.0,
+        spread_pct=0.1,
         liquidity_score=80.0,
         overall_score=75.0,
         qualifies=True,
