@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List
 
-from .models import ActivityEntry, AuditRecord, Order, Position
+from .models import ActivityEntry, DecisionRecord, Order, Position, ScanSnapshot
 
 DB_PATH = Path(__file__).resolve().parents[1] / "data" / "audit.db"
 
@@ -29,12 +29,27 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS orders (
                 order_id TEXT PRIMARY KEY,
                 market_id TEXT NOT NULL,
+                action TEXT NOT NULL,
                 side TEXT NOT NULL,
                 price REAL NOT NULL,
                 qty INTEGER NOT NULL,
                 status TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 filled_at TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS fills (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                order_id TEXT NOT NULL,
+                market_id TEXT NOT NULL,
+                action TEXT NOT NULL,
+                side TEXT NOT NULL,
+                price REAL NOT NULL,
+                qty INTEGER NOT NULL,
+                timestamp TEXT NOT NULL
             )
             """
         )
@@ -50,6 +65,8 @@ def init_db() -> None:
                 current_price REAL NOT NULL,
                 take_profit_pct REAL NOT NULL,
                 stop_loss_pct REAL NOT NULL,
+                max_hold_seconds INTEGER NOT NULL,
+                close_before_resolution_minutes INTEGER NOT NULL,
                 opened_at TEXT NOT NULL,
                 status TEXT NOT NULL,
                 pnl_pct REAL NOT NULL,
@@ -61,7 +78,7 @@ def init_db() -> None:
         )
         conn.execute(
             """
-            CREATE TABLE IF NOT EXISTS audit_log (
+            CREATE TABLE IF NOT EXISTS decisions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp TEXT NOT NULL,
                 market_id TEXT NOT NULL,
@@ -73,6 +90,15 @@ def init_db() -> None:
                 order_ids TEXT NOT NULL,
                 fills TEXT NOT NULL,
                 advisory TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                payload TEXT NOT NULL
             )
             """
         )
@@ -102,13 +128,14 @@ def upsert_order(order: Order) -> None:
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute(
             """
-            INSERT INTO orders (order_id, market_id, side, price, qty, status, created_at, filled_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO orders (order_id, market_id, action, side, price, qty, status, created_at, filled_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(order_id) DO UPDATE SET status=excluded.status, filled_at=excluded.filled_at
             """,
             (
                 order.order_id,
                 order.market_id,
+                order.action,
                 order.side,
                 order.price,
                 order.qty,
@@ -122,19 +149,20 @@ def upsert_order(order: Order) -> None:
 def fetch_orders(limit: int = 50) -> List[Order]:
     with sqlite3.connect(DB_PATH) as conn:
         rows = conn.execute(
-            "SELECT order_id, market_id, side, price, qty, status, created_at, filled_at FROM orders ORDER BY created_at DESC LIMIT ?",
+            "SELECT order_id, market_id, action, side, price, qty, status, created_at, filled_at FROM orders ORDER BY created_at DESC LIMIT ?",
             (limit,),
         ).fetchall()
     return [
         Order(
             order_id=row[0],
             market_id=row[1],
-            side=row[2],
-            price=row[3],
-            qty=row[4],
-            status=row[5],
-            created_at=datetime.fromisoformat(row[6]),
-            filled_at=datetime.fromisoformat(row[7]) if row[7] else None,
+            action=row[2],
+            side=row[3],
+            price=row[4],
+            qty=row[5],
+            status=row[6],
+            created_at=datetime.fromisoformat(row[7]),
+            filled_at=datetime.fromisoformat(row[8]) if row[8] else None,
         )
         for row in rows
     ]
@@ -154,6 +182,8 @@ def upsert_position(position: Position) -> None:
                 current_price,
                 take_profit_pct,
                 stop_loss_pct,
+                max_hold_seconds,
+                close_before_resolution_minutes,
                 opened_at,
                 status,
                 pnl_pct,
@@ -161,7 +191,7 @@ def upsert_position(position: Position) -> None:
                 trail_stop_pct,
                 closed_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(position_id) DO UPDATE SET
                 current_price=excluded.current_price,
                 status=excluded.status,
@@ -180,6 +210,8 @@ def upsert_position(position: Position) -> None:
                 position.current_price,
                 position.take_profit_pct,
                 position.stop_loss_pct,
+                position.max_hold_seconds,
+                position.close_before_resolution_minutes,
                 position.opened_at.isoformat(),
                 position.status,
                 position.pnl_pct,
@@ -195,7 +227,8 @@ def fetch_positions(limit: int = 50) -> List[Position]:
         rows = conn.execute(
             """
             SELECT position_id, market_id, market_name, side, qty, entry_price, current_price, take_profit_pct,
-                   stop_loss_pct, opened_at, status, pnl_pct, peak_pnl_pct, trail_stop_pct, closed_at
+                   stop_loss_pct, max_hold_seconds, close_before_resolution_minutes, opened_at, status, pnl_pct,
+                   peak_pnl_pct, trail_stop_pct, closed_at
             FROM positions ORDER BY opened_at DESC LIMIT ?
             """,
             (limit,),
@@ -211,22 +244,24 @@ def fetch_positions(limit: int = 50) -> List[Position]:
             current_price=row[6],
             take_profit_pct=row[7],
             stop_loss_pct=row[8],
-            opened_at=datetime.fromisoformat(row[9]),
-            status=row[10],
-            pnl_pct=row[11],
-            peak_pnl_pct=row[12],
-            trail_stop_pct=row[13],
-            closed_at=datetime.fromisoformat(row[14]) if row[14] else None,
+            max_hold_seconds=row[9],
+            close_before_resolution_minutes=row[10],
+            opened_at=datetime.fromisoformat(row[11]),
+            status=row[12],
+            pnl_pct=row[13],
+            peak_pnl_pct=row[14],
+            trail_stop_pct=row[15],
+            closed_at=datetime.fromisoformat(row[16]) if row[16] else None,
         )
         for row in rows
     ]
 
 
-def log_audit(record: AuditRecord) -> None:
+def log_decision(record: DecisionRecord) -> None:
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute(
             """
-            INSERT INTO audit_log (
+            INSERT INTO decisions (
                 timestamp,
                 market_id,
                 action,
@@ -255,19 +290,19 @@ def log_audit(record: AuditRecord) -> None:
         )
 
 
-def fetch_audit(limit: int = 200) -> List[AuditRecord]:
+def fetch_decisions(limit: int = 200) -> List[DecisionRecord]:
     with sqlite3.connect(DB_PATH) as conn:
         rows = conn.execute(
             """
             SELECT timestamp, market_id, action, qualifies, scores, rationale, config_hash, order_ids, fills, advisory
-            FROM audit_log ORDER BY id DESC LIMIT ?
+            FROM decisions ORDER BY id DESC LIMIT ?
             """,
             (limit,),
         ).fetchall()
     records = []
     for row in rows:
         records.append(
-            AuditRecord(
+            DecisionRecord(
                 timestamp=datetime.fromisoformat(row[0]),
                 market_id=row[1],
                 action=row[2],
@@ -281,3 +316,54 @@ def fetch_audit(limit: int = 200) -> List[AuditRecord]:
             )
         )
     return records
+
+
+def log_fill(order_id: str, market_id: str, action: str, side: str, price: float, qty: int) -> None:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            """
+            INSERT INTO fills (order_id, market_id, action, side, price, qty, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (order_id, market_id, action, side, price, qty, datetime.now().isoformat()),
+        )
+
+
+def fetch_fills(limit: int = 200) -> List[dict]:
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute(
+            """
+            SELECT order_id, market_id, action, side, price, qty, timestamp
+            FROM fills ORDER BY id DESC LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    return [
+        {
+            "order_id": row[0],
+            "market_id": row[1],
+            "action": row[2],
+            "side": row[3],
+            "price": row[4],
+            "qty": row[5],
+            "timestamp": row[6],
+        }
+        for row in rows
+    ]
+
+
+def log_snapshot(scan: ScanSnapshot) -> None:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "INSERT INTO snapshots (timestamp, payload) VALUES (?, ?)",
+            (scan.timestamp.isoformat(), json.dumps(scan.model_dump())),
+        )
+
+
+def fetch_snapshots(limit: int = 50) -> List[dict]:
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute(
+            "SELECT payload FROM snapshots ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [json.loads(row[0]) for row in rows]

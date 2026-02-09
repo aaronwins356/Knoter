@@ -21,6 +21,7 @@ class ScoringWeights(BaseModel):
     volatility: float = Field(0.45, ge=0.0, le=1.0)
     spread: float = Field(0.25, ge=0.0, le=1.0)
     liquidity: float = Field(0.3, ge=0.0, le=1.0)
+    resolution: float = Field(0.1, ge=0.0, le=1.0)
 
 
 class ScoringConfig(BaseModel):
@@ -30,6 +31,8 @@ class ScoringConfig(BaseModel):
     min_liquidity_score: float = Field(45.0, ge=0.0, le=100.0)
     liquidity_volume_ref: float = Field(200.0, ge=1.0)
     liquidity_depth_ref: float = Field(250.0, ge=1.0)
+    liquidity_update_ref: float = Field(1.0, ge=0.1)
+    resolution_minutes_ref: float = Field(720.0, ge=1.0)
     weights: ScoringWeights = Field(default_factory=ScoringWeights)
 
 
@@ -37,6 +40,7 @@ class EntryConfig(BaseModel):
     momentum_window: PositiveInt = 6
     momentum_threshold_pct: float = Field(0.6, ge=0.0, le=10.0)
     entry_edge_pct: float = Field(0.3, ge=0.0, le=5.0)
+    fee_pct: float = Field(0.1, ge=0.0, le=5.0)
     order_ttl_seconds: PositiveInt = 30
     max_replacements: PositiveInt = 2
     allow_mean_reversion: bool = False
@@ -50,6 +54,8 @@ class ExitConfig(BaseModel):
     close_before_resolution_minutes: PositiveInt = 60
     trail_start_pct: float = Field(2.0, ge=0.0, le=50.0)
     trail_gap_pct: float = Field(1.0, ge=0.1, le=25.0)
+    close_slippage_pct: float = Field(0.4, ge=0.0, le=5.0)
+    max_close_requotes: PositiveInt = 2
 
 
 class RiskLimits(BaseModel):
@@ -84,6 +90,7 @@ class BotConfig(BaseModel):
     risk_notes: str = ""
     trading_mode: TradingMode = TradingMode.PAPER
     live_trading_enabled: bool = False
+    live_confirm: str = ""
     advisor: AdvisorConfig = Field(default_factory=AdvisorConfig)
 
 
@@ -117,6 +124,8 @@ class Position(BaseModel):
     current_price: float
     take_profit_pct: float
     stop_loss_pct: float
+    max_hold_seconds: int = 0
+    close_before_resolution_minutes: int = 0
     opened_at: datetime
     status: str = "open"
     pnl_pct: float = 0.0
@@ -128,6 +137,7 @@ class Position(BaseModel):
 class Order(BaseModel):
     order_id: str
     market_id: str
+    action: str
     side: str
     price: float
     qty: int
@@ -143,6 +153,19 @@ class ActivityEntry(BaseModel):
 
 
 class AuditRecord(BaseModel):
+    timestamp: datetime
+    market_id: str
+    action: str
+    qualifies: bool
+    scores: dict
+    rationale: str
+    config_hash: str
+    order_ids: List[str] = Field(default_factory=list)
+    fills: List[dict] = Field(default_factory=list)
+    advisory: Optional[dict] = None
+
+
+class DecisionRecord(BaseModel):
     timestamp: datetime
     market_id: str
     action: str
@@ -181,7 +204,9 @@ class HealthStatus(BaseModel):
 
 class KalshiStatus(BaseModel):
     connected: bool
-    account: Optional[str] = None
+    environment: str
+    account_masked: Optional[str] = None
+    last_error_summary: Optional[str] = None
     mode: TradingMode
 
 
@@ -193,4 +218,4 @@ class AdvisorOutput(BaseModel):
 
 class DryRunResult(BaseModel):
     scan: ScanSnapshot
-    decisions: List[AuditRecord]
+    decisions: List[DecisionRecord]

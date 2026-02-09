@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
 from app.models import RiskLimits
-from app.risk import RiskManager
+from app.risk.risk_manager import RiskManager
 
 
 def test_risk_manager_blocks_after_losses():

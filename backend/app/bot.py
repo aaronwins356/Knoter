@@ -2,20 +2,14 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta, timezone
-from typing import List, Tuple
+from typing import List, Optional
 
+from .execution.order_manager import OrderManager
 from .logging_utils import log_event
-from .models import AuditRecord, MarketSnapshot, Position, ScanSnapshot, TradingMode
-from .storage import log_activity, log_audit, upsert_order, upsert_position
-from .trading_engine import (
-    MarketMetrics,
-    compute_market_metrics,
-    compute_pnl_pct,
-    config_hash,
-    decide_entry,
-    decide_exit,
-    exposure_from_positions,
-)
+from .models import DecisionRecord, MarketSnapshot, Position, TradingMode
+from .storage import log_activity, log_decision, upsert_position
+from .strategy.engine import compute_pnl_pct, config_hash, decide_entry, decide_exit
+from .strategy.scanner import scan_markets
 from .state import MarketState
 
 
@@ -31,8 +25,8 @@ def build_advisor_prompt(snapshot: MarketSnapshot, action: str, rationale: str, 
     )
 
 
-def record_audit(state, snapshot: MarketSnapshot, action: str, rationale: str, advisory=None, order_ids=None) -> None:
-    record = AuditRecord(
+def record_decision(state, snapshot: MarketSnapshot, action: str, rationale: str, advisory=None, order_ids=None) -> None:
+    record = DecisionRecord(
         timestamp=datetime.now(tz=timezone.utc),
         market_id=snapshot.market_id,
         action=action,
@@ -49,7 +43,7 @@ def record_audit(state, snapshot: MarketSnapshot, action: str, rationale: str, a
         fills=[],
         advisory=advisory,
     )
-    log_audit(record)
+    log_decision(record)
 
 
 def _safe_advisor(state, snapshot: MarketSnapshot, action: str, rationale: str):
@@ -61,178 +55,81 @@ def _safe_advisor(state, snapshot: MarketSnapshot, action: str, rationale: str):
         prompt = build_advisor_prompt(snapshot, action, rationale, state.risk.risk_mode())
         output = state.openai.advise(prompt)
         return output.model_dump() if output else None
-    except Exception as exc:  # noqa: BLE001 - safeguard advisor only
+    except Exception as exc:  # noqa: BLE001
         log_event("advisor_error", {"error": str(exc)})
         return None
 
 
-async def scan_markets(state) -> ScanSnapshot:
-    markets = state.broker.list_markets(
-        state.config.market_filters.event_type, state.config.market_filters.time_window_hours
-    )
-    snapshots: List[MarketSnapshot] = []
-    for market in markets:
-        try:
-            quote = state.broker.get_market_snapshot(market)
-        except Exception as exc:  # noqa: BLE001
-            log_event("market_snapshot_error", {"market_id": market.market_id, "error": str(exc)})
-            continue
-        if not quote:
-            continue
-        market_state = state.market_state.get(market.market_id)
-        if not market_state:
-            market_state = MarketState()
-            state.market_state[market.market_id] = market_state
-        market_state.prices.append(quote["mid"])
-        market_state.spreads.append(quote["ask"] - quote["bid"])
-        market_state.update_count += 1
-
-        metrics = compute_market_metrics(
-            list(market_state.prices)[-state.config.scoring.vol_window :],
-            quote["bid"],
-            quote["ask"],
-            quote["volume"],
-            quote["bid_depth"],
-            quote["ask_depth"],
-            quote["time_to_resolution_minutes"],
-            state.config,
-        )
-        snapshot = MarketSnapshot(
-            market_id=market.market_id,
-            name=market.name,
-            category=market.category,
-            mid_price=quote["mid"],
-            bid=quote["bid"],
-            ask=quote["ask"],
-            last_price=quote["last"],
-            volume=quote["volume"],
-            bid_depth=quote["bid_depth"],
-            ask_depth=quote["ask_depth"],
-            volatility_pct=metrics.volatility_pct,
-            spread_pct=metrics.spread_pct,
-            liquidity_score=metrics.liquidity_score,
-            overall_score=metrics.overall_score,
-            qualifies=metrics.qualifies,
-            rationale=metrics.rationale,
-            time_to_resolution_minutes=quote["time_to_resolution_minutes"],
-        )
-        market_state.last_snapshot = snapshot
-        snapshots.append(snapshot)
-
-    snapshots.sort(key=lambda item: item.overall_score, reverse=True)
-    scan = ScanSnapshot(timestamp=datetime.now(tz=timezone.utc), markets=snapshots)
-    state.last_scan = scan
-    return scan
-
-
-def _cooldown_active(market_state) -> bool:
+def _cooldown_active(market_state: Optional[MarketState]) -> bool:
     if not market_state or not market_state.cooldown_until:
         return False
     return datetime.now(tz=timezone.utc) < market_state.cooldown_until
 
 
-async def place_order_with_ttl(state, market_id: str, side: str, price: float) -> Tuple[str, str]:
-    order_ids = []
-    last_status = "open"
-    for attempt in range(state.config.entry.max_replacements + 1):
-        now = datetime.now(tz=timezone.utc)
-        response = state.broker.place_order(
-            market_id,
-            side,
-            price,
-            state.config.trade_sizing.order_size,
-            order_type="limit",
-        )
-        order_id = response.get("order_id", "")
-        status = response.get("status", "open")
-        order_ids.append(order_id)
-        last_status = status
-        order = state.orders.get(order_id)
-        if not order and order_id:
-            from .models import Order
-
-            order = Order(
-                order_id=order_id,
-                market_id=market_id,
-                side=side,
-                price=price,
-                qty=state.config.trade_sizing.order_size,
-                status=status,
-                created_at=now,
-                filled_at=now if status == "filled" else None,
-            )
-            state.orders[order_id] = order
-        if order:
-            order.status = status
-            order.filled_at = now if status == "filled" else order.filled_at
-            upsert_order(order)
-        if status == "filled":
-            return order_id, status
-        if attempt < state.config.entry.max_replacements and state.config.entry.order_ttl_seconds > 0:
-            await asyncio.sleep(state.config.entry.order_ttl_seconds)
-        state.broker.cancel_order(order_id)
-    return order_ids[-1], last_status
+def _expected_edge_cost_pct(snapshot: MarketSnapshot, config) -> float:
+    return snapshot.spread_pct + config.entry.fee_pct
 
 
-async def maybe_open_trade(state) -> List[AuditRecord]:
-    decisions: List[AuditRecord] = []
-    if state.config.trading_mode == TradingMode.LIVE and not state.config.live_trading_enabled:
-        return decisions
-    if state.trades_executed >= state.config.risk_limits.max_trades_per_event:
-        return decisions
+async def maybe_open_trade(state) -> None:
+    if state.config.trading_mode == TradingMode.LIVE and (
+        not state.config.live_trading_enabled or state.config.live_confirm != "ENABLE LIVE TRADING"
+    ):
+        return
     if not state.last_scan:
-        return decisions
+        return
+    if state.trades_executed >= state.config.risk_limits.max_trades_per_event:
+        return
 
     positions = [pos for pos in state.positions.values() if pos.status == "open"]
-    exposure_qty, exposure_notional = exposure_from_positions(
-        [(pos.entry_price, pos.qty) for pos in positions]
-    )
+    exposure_qty = sum(pos.qty for pos in positions)
+    exposure_notional = sum(pos.entry_price * pos.qty for pos in positions)
     state.risk.update_exposure(exposure_qty, exposure_notional, len(positions))
     risk_allows, risk_reason = state.risk.can_trade()
+    qualifying = [snap for snap in state.last_scan.markets if snap.qualifies]
+    if not qualifying:
+        return
 
-    for snapshot in state.last_scan.markets:
+    max_new_positions = max(state.config.risk_limits.max_concurrent_positions - len(positions), 0)
+    pick_count = 2 if max_new_positions >= 2 else 1
+    selections = qualifying[:pick_count]
+
+    order_manager = OrderManager(state.broker, state.config)
+    for snapshot in selections:
+        if snapshot.market_id in {pos.market_id for pos in positions}:
+            continue
         market_state = state.market_state.get(snapshot.market_id)
-        depth = snapshot.bid_depth + snapshot.ask_depth
-        metrics = MarketMetrics(
-            volatility_pct=snapshot.volatility_pct,
-            spread_pct=snapshot.spread_pct,
-            liquidity_score=snapshot.liquidity_score,
-            overall_score=snapshot.overall_score,
-            qualifies=snapshot.qualifies,
-            rationale=snapshot.rationale,
-        )
         decision = decide_entry(
             prices=market_state.prices if market_state else [],
             bid=snapshot.bid,
             ask=snapshot.ask,
-            metrics=metrics,
             config=state.config,
             risk_allows=risk_allows,
             risk_reason=risk_reason,
             in_cooldown=_cooldown_active(market_state),
-            depth=depth,
+            expected_edge_cost_pct=_expected_edge_cost_pct(snapshot, state.config),
         )
-
         advisory = _safe_advisor(state, snapshot, decision.action, decision.rationale)
-        record_audit(state, snapshot, decision.action, decision.rationale, advisory=advisory)
-        if decision.action != "ENTER":
+        record_decision(state, snapshot, decision.action, decision.rationale, advisory=advisory)
+        if decision.action != "ENTER" or not decision.side or decision.price is None:
             continue
 
-        order_id, status = await place_order_with_ttl(state, snapshot.market_id, decision.side, decision.price)
+        result = await order_manager.place_with_ttl(snapshot.market_id, "buy", decision.side, decision.price)
         now = datetime.now(tz=timezone.utc)
         position = Position(
-            position_id=f"pos-{order_id}",
+            position_id=f"pos-{result.order_id}",
             market_id=snapshot.market_id,
             market_name=snapshot.name,
-            side=decision.side or "buy",
+            side=decision.side,
             qty=state.config.trade_sizing.order_size,
-            entry_price=decision.price or snapshot.mid_price,
-            current_price=decision.price or snapshot.mid_price,
+            entry_price=decision.price,
+            current_price=decision.price,
             take_profit_pct=state.config.exit.take_profit_pct,
             stop_loss_pct=state.config.exit.stop_loss_pct,
+            max_hold_seconds=state.config.exit.max_hold_seconds,
+            close_before_resolution_minutes=state.config.exit.close_before_resolution_minutes,
             opened_at=now,
         )
-        if status == "filled":
+        if result.status == "filled":
             state.positions[position.position_id] = position
             state.trades_executed += 1
             if market_state:
@@ -248,26 +145,26 @@ async def maybe_open_trade(state) -> List[AuditRecord]:
             log_event(
                 "order_filled",
                 {
-                    "order_id": order_id,
+                    "order_id": result.order_id,
                     "market_id": snapshot.market_id,
                     "price": position.entry_price,
                     "side": decision.side,
                 },
             )
-            record_audit(
+            record_decision(
                 state,
                 snapshot,
                 "ENTER",
                 decision.rationale,
                 advisory=advisory,
-                order_ids=[order_id],
+                order_ids=[result.order_id],
             )
             break
-    return decisions
 
 
-def update_positions(state) -> None:
+async def update_positions(state) -> None:
     now = datetime.now(tz=timezone.utc)
+    order_manager = OrderManager(state.broker, state.config)
     for position in list(state.positions.values()):
         if position.status != "open":
             continue
@@ -295,12 +192,12 @@ def update_positions(state) -> None:
         position.trail_stop_pct = trail_stop
 
         if decision.action != "HOLD":
-            response = state.broker.place_order(
+            result = await order_manager.close_with_limit(
                 position.market_id,
-                "sell" if position.side == "buy" else "buy",
-                decision.price or current,
+                position.side,
+                snapshot.bid,
+                snapshot.ask,
                 position.qty,
-                order_type="limit",
             )
             position.status = "closed"
             position.closed_at = now
@@ -311,7 +208,13 @@ def update_positions(state) -> None:
                 category="trade",
             )
             log_activity(entry)
-            record_audit(state, snapshot, decision.action, decision.rationale, order_ids=[response.get("order_id", "")])
+            record_decision(
+                state,
+                snapshot,
+                decision.action,
+                decision.rationale,
+                order_ids=[result.order_id],
+            )
         upsert_position(position)
 
 
@@ -333,11 +236,11 @@ async def run_bot(state, publish) -> None:
     state.next_action = "Scanning for entries"
     while state.running:
         handle_kill_switch(state)
-        scan = await scan_markets(state)
-        update_positions(state)
+        scan_markets(state)
+        await update_positions(state)
         await maybe_open_trade(state)
 
-        await publish("scan", scan.model_dump())
+        await publish("scan", state.last_scan.model_dump() if state.last_scan else {})
         await publish("positions", {"positions": [pos.model_dump() for pos in state.positions.values()]})
         await publish("status", state.status_snapshot().model_dump())
         await publish("activity", {"entries": [entry.model_dump() for entry in state.activity_entries()]})

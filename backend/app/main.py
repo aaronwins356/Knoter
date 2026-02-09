@@ -12,14 +12,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from .bot import run_bot, scan_markets
+from .bot import run_bot
 from .config import load_config, save_config
 from .logging_utils import configure_logging, log_event
-from .models import AuditRecord, BotConfig, DryRunResult, HealthStatus, KalshiStatus, TradingMode
-from .risk import RiskManager
+from .models import BotConfig, DecisionRecord, DryRunResult, HealthStatus, KalshiStatus, TradingMode
+from .risk.risk_manager import RiskManager
 from .state import BotState
-from .storage import fetch_audit, fetch_orders, fetch_positions, init_db, upsert_position
-from .trading_engine import MarketMetrics, compute_pnl_pct, decide_entry, decide_exit
+from .storage import fetch_decisions, fetch_fills, fetch_orders, fetch_positions, fetch_snapshots, init_db, upsert_position
+from .strategy.engine import compute_pnl_pct, decide_entry, decide_exit
+from .strategy.scanner import scan_markets
+from .strategy.scoring import MarketMetrics
 
 app = FastAPI(title="Kalshi Volatility Trader")
 
@@ -73,20 +75,16 @@ async def health() -> HealthStatus:
 
 @app.get("/kalshi/status", response_model=KalshiStatus)
 async def kalshi_status() -> KalshiStatus:
-    if not state.kalshi_client.configured():
-        return KalshiStatus(connected=False, mode=state.config.trading_mode)
-    try:
-        account = state.kalshi_client.get_account()
-        masked = None
-        if account:
-            handle = account.get("email") or account.get("member_id") or account.get("id")
-            if handle:
-                handle = str(handle)
-                masked = f"{handle[:2]}***{handle[-2:]}" if len(handle) > 4 else "***"
-        return KalshiStatus(connected=True, account=masked, mode=state.config.trading_mode)
-    except Exception as exc:  # noqa: BLE001
-        log_event("kalshi_status_error", {"error": str(exc)})
-        return KalshiStatus(connected=False, mode=state.config.trading_mode)
+    status = state.kalshi_broker.auth_status()
+    if not status.connected:
+        log_event("kalshi_status_error", {"error": status.last_error_summary})
+    return KalshiStatus(
+        connected=status.connected,
+        environment=status.environment,
+        account_masked=status.account_masked,
+        last_error_summary=status.last_error_summary,
+        mode=state.config.trading_mode,
+    )
 
 
 @app.get("/config", response_model=BotConfig)
@@ -109,14 +107,18 @@ async def update_config(payload: Dict[str, Any]) -> BotConfig:
 
     updated = deep_merge(updated, payload)
     updated["live_trading_enabled"] = state.config.live_trading_enabled
+    if live_confirm is not None:
+        updated["live_confirm"] = live_confirm
     config = BotConfig(**updated)
     if config.trading_mode == TradingMode.LIVE:
         if not config.live_trading_enabled:
             raise HTTPException(status_code=400, detail="Live trading disabled on server")
-        if live_confirm != "ENABLE LIVE TRADING":
+        if config.live_confirm != "ENABLE LIVE TRADING":
             raise HTTPException(status_code=400, detail="Missing live trading confirmation")
     state.config = config
     state.risk = RiskManager(state.config.risk_limits)
+    state.kalshi_broker.live_gate_enabled = state.config.live_trading_enabled
+    state.kalshi_broker.live_confirm = state.config.live_confirm
     save_config(state.config)
     return state.config
 
@@ -134,7 +136,7 @@ async def get_market_detail(market_id: str) -> Dict[str, Any]:
     if not market_state or not market_state.last_snapshot:
         raise HTTPException(status_code=404, detail="Market not found")
     recent_prices = list(market_state.prices)[-30:]
-    audit = [record for record in fetch_audit(200) if record.market_id == market_id][:10]
+    audit = [record for record in fetch_decisions(200) if record.market_id == market_id][:10]
     return {
         "snapshot": market_state.last_snapshot.model_dump(),
         "recent_prices": recent_prices,
@@ -156,13 +158,29 @@ async def get_orders() -> Dict[str, Any]:
 
 @app.get("/audit")
 async def get_audit() -> Dict[str, Any]:
-    records = fetch_audit()
+    records = fetch_decisions()
     return {"records": [record.model_dump() for record in records]}
+
+
+@app.get("/decisions")
+async def get_decisions() -> Dict[str, Any]:
+    records = fetch_decisions()
+    return {"records": [record.model_dump() for record in records]}
+
+
+@app.get("/fills")
+async def get_fills() -> Dict[str, Any]:
+    return {"fills": fetch_fills()}
+
+
+@app.get("/snapshots")
+async def get_snapshots() -> Dict[str, Any]:
+    return {"snapshots": fetch_snapshots()}
 
 
 @app.get("/audit/csv")
 async def download_audit_csv() -> StreamingResponse:
-    records = fetch_audit()
+    records = fetch_decisions()
     buffer = io.StringIO()
     writer = csv.writer(buffer)
     writer.writerow(
@@ -217,14 +235,14 @@ async def close_position(position_id: str) -> Dict[str, str]:
     if not market_state or not market_state.last_snapshot:
         raise HTTPException(status_code=400, detail="No market data available")
     snapshot = market_state.last_snapshot
-    price = snapshot.bid if position.side == "buy" else snapshot.ask
+    price = snapshot.bid if position.side == "yes" else snapshot.ask
     try:
         response = state.broker.place_order(
             position.market_id,
-            "sell" if position.side == "buy" else "buy",
+            "sell",
+            position.side,
             price,
             position.qty,
-            order_type="limit",
         )
         position.status = "closed"
         position.closed_at = datetime.now(tz=timezone.utc)
@@ -237,8 +255,8 @@ async def close_position(position_id: str) -> Dict[str, str]:
 
 @app.post("/bot/dryrun", response_model=DryRunResult)
 async def dry_run() -> DryRunResult:
-    scan = await scan_markets(state)
-    decisions: list[AuditRecord] = []
+    scan = scan_markets(state)
+    decisions: list[DecisionRecord] = []
     positions = [pos for pos in state.positions.values() if pos.status == "open"]
     for snapshot in scan.markets:
         market_state = state.market_state.get(snapshot.market_id)
@@ -256,20 +274,19 @@ async def dry_run() -> DryRunResult:
             prices=market_state.prices if market_state else [],
             bid=snapshot.bid,
             ask=snapshot.ask,
-            metrics=metrics,
             config=state.config,
             risk_allows=risk_allows,
             risk_reason=risk_reason,
             in_cooldown=in_cooldown,
-            depth=snapshot.bid_depth + snapshot.ask_depth,
+            expected_edge_cost_pct=snapshot.spread_pct + state.config.entry.fee_pct,
         )
         decisions.append(
-            AuditRecord(
+            DecisionRecord(
                 timestamp=scan.timestamp,
                 market_id=snapshot.market_id,
                 action=decision.action,
                 qualifies=snapshot.qualifies,
-                scores=metrics.__dict__,
+                scores={**metrics.__dict__, "expected_edge_pct": decision.expected_edge_pct},
                 rationale=decision.rationale,
                 config_hash="dryrun",
                 order_ids=[],
@@ -298,7 +315,7 @@ async def dry_run() -> DryRunResult:
         )
         pnl_pct = compute_pnl_pct(position.entry_price, snapshot.mid_price, position.side)
         decisions.append(
-            AuditRecord(
+            DecisionRecord(
                 timestamp=scan.timestamp,
                 market_id=position.market_id,
                 action=decision.action,
@@ -319,6 +336,7 @@ async def start_bot() -> Dict[str, str]:
     if state.running:
         return {"status": "already_running"}
     state.running = True
+    state.killed = False
     state.next_action = "Initializing"
     await manager.broadcast({"type": "status", "data": state.status_snapshot().model_dump()})
 
@@ -338,6 +356,25 @@ async def stop_bot() -> Dict[str, str]:
     state.next_action = "Paused"
     await manager.broadcast({"type": "status", "data": state.status_snapshot().model_dump()})
     return {"status": "stopped"}
+
+
+@app.post("/bot/kill")
+async def kill_bot() -> Dict[str, str]:
+    state.running = False
+    state.killed = True
+    try:
+        for order in state.broker.get_open_orders():
+            order_id = order.get("order_id")
+            if order_id:
+                state.broker.cancel_order(order_id)
+    except Exception as exc:  # noqa: BLE001
+        log_event("kill_switch_error", {"error": str(exc)})
+    if state.task:
+        state.task.cancel()
+        state.task = None
+    state.next_action = "Killed"
+    await manager.broadcast({"type": "status", "data": state.status_snapshot().model_dump()})
+    return {"status": "killed"}
 
 
 @app.get("/bot/status")

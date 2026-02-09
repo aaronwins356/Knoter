@@ -1,5 +1,5 @@
 from app.models import BotConfig
-from app.trading_engine import compute_market_metrics
+from app.strategy.scoring import compute_market_metrics
 
 
 def test_market_qualification_passes_thresholds():
@@ -12,6 +12,7 @@ def test_market_qualification_passes_thresholds():
         volume=400.0,
         bid_depth=300.0,
         ask_depth=300.0,
+        update_rate=2.0,
         time_to_resolution_minutes=120,
         config=config,
     )
@@ -27,6 +28,7 @@ def test_market_rejects_wide_spread():
         volume=400.0,
         bid_depth=300.0,
         ask_depth=300.0,
+        update_rate=1.0,
         time_to_resolution_minutes=120,
         config=config,
     )
