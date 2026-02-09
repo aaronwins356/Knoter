@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Tuple
 
 
 @dataclass(frozen=True)
@@ -139,6 +139,71 @@ def _normalize_timestamp(ts: Optional[float]) -> Optional[int]:
     return int(value)
 
 
+def _clamp_unit_price(value: float) -> Tuple[float, bool]:
+    if value < 0.0:
+        return 0.0, True
+    if value > 1.0:
+        return 1.0, True
+    return float(value), False
+
+
+def normalize_quote_values(
+    bid: Optional[float],
+    ask: Optional[float],
+    mid: Optional[float],
+    last: Optional[float],
+    reason: Optional[str] = None,
+) -> Quote:
+    if bid is None and ask is None and mid is None and last is None:
+        return Quote(bid=0.0, ask=0.0, mid=0.0, last=0.0, spread_pct=0.0, valid=False, reason=reason or "missing_quote")
+
+    if bid is not None and ask is not None:
+        mid = (bid + ask) / 2
+    if mid is None:
+        mid = last
+    if bid is None and mid is not None:
+        bid = mid
+    if ask is None and mid is not None:
+        ask = mid
+    if last is None and mid is not None:
+        last = mid
+
+    if bid is None or ask is None or mid is None or last is None:
+        return Quote(bid=0.0, ask=0.0, mid=0.0, last=0.0, spread_pct=0.0, valid=False, reason=reason or "missing_quote")
+
+    invalid_reasons: List[str] = []
+    bid, bid_clamped = _clamp_unit_price(float(bid))
+    ask, ask_clamped = _clamp_unit_price(float(ask))
+    mid, mid_clamped = _clamp_unit_price(float(mid))
+    last, last_clamped = _clamp_unit_price(float(last))
+
+    if bid_clamped or ask_clamped or mid_clamped or last_clamped:
+        invalid_reasons.append("out_of_range")
+
+    if ask < bid:
+        bid, ask = min(bid, ask), max(bid, ask)
+        invalid_reasons.append("inverted_spread")
+
+    if mid < bid or mid > ask:
+        mid = (bid + ask) / 2
+        invalid_reasons.append("mid_outside_spread")
+
+    spread_pct = 0.0
+    if mid > 0 and ask >= bid:
+        spread_pct = ((ask - bid) / max(mid, 0.0001)) * 100
+
+    is_valid = not invalid_reasons
+    return Quote(
+        bid=round(bid, 4),
+        ask=round(ask, 4),
+        mid=round(mid, 4),
+        last=round(last, 4),
+        spread_pct=round(spread_pct, 4),
+        valid=is_valid,
+        reason=reason or (invalid_reasons[0] if invalid_reasons else None),
+    )
+
+
 def normalize_quote(payload: dict) -> Quote:
     bid = _extract_price(
         payload,
@@ -161,37 +226,7 @@ def normalize_quote(payload: dict) -> Quote:
         ["last_price", "last"],
     )
 
-    if bid is not None and ask is not None:
-        mid = (bid + ask) / 2
-    if mid is None:
-        mid = last
-
-    if bid is None and mid is not None:
-        bid = mid
-    if ask is None and mid is not None:
-        ask = mid
-    if last is None and mid is not None:
-        last = mid
-
-    if bid is None or ask is None or mid is None or last is None:
-        return Quote(bid=0.0, ask=0.0, mid=0.0, last=0.0, spread_pct=0.0, valid=False, reason="missing_quote")
-
-    bid = float(bid)
-    ask = float(ask)
-    mid = float(mid)
-    last = float(last)
-    spread_pct = 0.0
-    if mid > 0 and ask >= bid:
-        spread_pct = ((ask - bid) / max(mid, 0.0001)) * 100
-
-    return Quote(
-        bid=round(bid, 4),
-        ask=round(ask, 4),
-        mid=round(mid, 4),
-        last=round(last, 4),
-        spread_pct=round(spread_pct, 4),
-        valid=True,
-    )
+    return normalize_quote_values(bid=bid, ask=ask, mid=mid, last=last)
 
 
 def normalize_market_meta(payload: dict, now_ts: Optional[int] = None) -> dict:

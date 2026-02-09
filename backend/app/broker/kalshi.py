@@ -48,7 +48,7 @@ class KalshiBroker:
         markets = self.client.list_markets(params=params, fetch_all=True)
         normalized: List[MarketInfo] = []
         for item in markets:
-            ticker = item.get("ticker") or item.get("id") or ""
+            ticker = item.get("ticker") or item.get("market_ticker") or ""
             if not ticker:
                 continue
             meta = normalize_market_meta(item, now_ts=now_ts)
@@ -70,31 +70,28 @@ class KalshiBroker:
         series_tickers, event_tickers = self._resolve_focus_tickers(keywords)
 
         collected: Dict[str, MarketInfo] = {}
-        for status in ("open", "active"):
-            windowed = self.get_markets_windowed(now_ts, time_window_hours, status=status)
-            for market in windowed:
-                payload = market.raw_payload
-                series_ticker = payload.get("series_ticker")
-                event_ticker = payload.get("event_ticker")
-                if event_tickers and event_ticker:
-                    if event_ticker not in event_tickers:
-                        continue
-                elif series_tickers and series_ticker:
-                    if series_ticker not in series_tickers:
-                        continue
-                elif not self._market_matches(payload, keywords):
+        windowed = self.get_markets_windowed(now_ts, time_window_hours, status="open")
+        for market in windowed:
+            payload = market.raw_payload
+            series_ticker = payload.get("series_ticker")
+            event_ticker = payload.get("event_ticker")
+            if event_tickers and event_ticker:
+                if event_ticker not in event_tickers:
                     continue
-                market = MarketInfo(
-                    ticker=market.ticker,
-                    title=market.title,
-                    close_ts=market.close_ts,
-                    status=(payload.get("status") or status).lower(),
-                    category=event_type,
-                    raw_payload=payload,
-                )
-                collected.setdefault(market.ticker, market)
-            if collected:
-                break
+            elif series_tickers and series_ticker:
+                if series_ticker not in series_tickers:
+                    continue
+            elif not self._market_matches(payload, keywords):
+                continue
+            market = MarketInfo(
+                ticker=market.ticker,
+                title=market.title,
+                close_ts=market.close_ts,
+                status=(payload.get("status") or "open").lower(),
+                category=event_type,
+                raw_payload=payload,
+            )
+            collected.setdefault(market.ticker, market)
 
         return list(collected.values())
 
