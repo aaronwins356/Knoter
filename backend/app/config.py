@@ -15,8 +15,8 @@ def load_config() -> BotConfig:
         config = BotConfig(**data)
     else:
         config = BotConfig()
-    if os.getenv("KNOTER_LIVE_TRADING_ENABLED", "false").lower() in {"1", "true", "yes"}:
-        config.live_trading_enabled = True
+    env_live = os.getenv("KNOTER_LIVE_TRADING_ENABLED", "false").lower() in {"1", "true", "yes"}
+    config.live_trading_enabled = env_live
     return config
 
 

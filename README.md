@@ -54,25 +54,28 @@ not configured. This is intended for safe, testable validation of the risk logic
 
 ## Enabling Live Trading
 
-1. Set `KALSHI_API_KEY` and `KALSHI_API_SECRET` in your `.env`.
-2. Set `KNOTER_LIVE_TRADING_ENABLED=true` in your `.env` and restart the backend.
-3. In the dashboard, switch mode to LIVE and type the confirmation phrase **ENABLE LIVE TRADING**.
+1. Set `KALSHI_API_KEY` in your `.env`.
+2. Provide your RSA private key via **either** `KALSHI_PRIVATE_KEY_PATH` (preferred) **or** `KALSHI_PRIVATE_KEY_PEM`.
+3. Set `KNOTER_LIVE_TRADING_ENABLED=true` in your `.env` and restart the backend.
+4. In the dashboard, switch mode to LIVE and type the confirmation phrase **ENABLE LIVE TRADING**.
 
 > **Warning:** Live trading carries risk. No strategy guarantees returns. Always validate in paper mode first.
 
 ## API Endpoints
 
 - `GET /health` — service + connection status
-- `GET /kalshi/status` — Kalshi connectivity and masked account info
+- `GET /kalshi/status` — Kalshi connectivity, environment, and masked account info
 - `GET /config` / `POST /config` — bot configuration
 - `GET /markets/scan` — latest scan snapshot
 - `GET /markets/{market_id}/detail` — market detail (prices, audit, scores)
-- `POST /bot/start` / `POST /bot/stop` — control bot
+- `POST /bot/start` / `POST /bot/stop` / `POST /bot/kill` — control bot
 - `POST /bot/dryrun` — run one scan cycle without placing orders
 - `GET /bot/status` — running status
 - `GET /positions` / `POST /positions/{position_id}/close` — positions
 - `GET /orders` / `POST /orders/{order_id}/cancel` — orders
-- `GET /audit` / `GET /audit/csv` — audit log
+- `GET /audit` / `GET /audit/csv` / `GET /decisions` — decision audit log
+- `GET /fills` — recent fills
+- `GET /snapshots` — scan snapshots history
 - `WS /ws` — live updates (scan, status, positions, activity)
 
 ## Testing

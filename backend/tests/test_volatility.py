@@ -1,4 +1,4 @@
-from app.trading_engine import compute_log_returns
+from app.strategy.scoring import compute_log_returns
 
 
 def test_compute_log_returns():

@@ -2,6 +2,7 @@ const state = {
   markets: [],
   positions: [],
   orders: [],
+  fills: [],
   activity: [],
   audit: [],
   status: "Idle",
@@ -33,10 +34,12 @@ const elements = {
   table: document.getElementById("market-table"),
   positions: document.getElementById("positions"),
   orders: document.getElementById("orders"),
+  fills: document.getElementById("fills"),
   log: document.getElementById("activity-log"),
   auditLog: document.getElementById("audit-log"),
   start: document.getElementById("start-bot"),
   stop: document.getElementById("stop-bot"),
+  killBot: document.getElementById("kill-bot"),
   modePill: document.getElementById("mode-pill"),
   liveWarning: document.getElementById("live-warning"),
   openaiStatus: document.getElementById("openai-status"),
@@ -83,8 +86,9 @@ const elements = {
 
 const formatPercent = (value) => `${(value * 100).toFixed(2)}%`;
 
-const setConnectionStatus = (element, ok, label) => {
-  element.textContent = ok ? `${label} connected` : `${label} not configured`;
+const setConnectionStatus = (element, ok, label, meta = "") => {
+  const suffix = meta ? ` (${meta})` : "";
+  element.textContent = ok ? `${label} connected${suffix}` : `${label} not configured${suffix}`;
   element.style.background = ok ? "rgba(42, 214, 166, 0.18)" : "rgba(255, 204, 122, 0.2)";
   element.style.color = ok ? "#6df2c9" : "#ffcc7a";
 };
@@ -162,6 +166,8 @@ const renderPositions = () => {
         <div class="metric"><span>Entry</span><span>${formatPercent(position.entry_price)}</span></div>
         <div class="metric"><span>Current</span><span>${formatPercent(position.current_price)}</span></div>
         <div class="metric"><span>PnL</span><span>${position.pnl_pct.toFixed(2)}%</span></div>
+        <div class="metric"><span>TP / SL</span><span>${position.take_profit_pct.toFixed(1)}% / ${position.stop_loss_pct.toFixed(1)}%</span></div>
+        <div class="metric"><span>Time stop</span><span>${position.max_hold_seconds}s</span></div>
         <button class="secondary" data-close="${position.position_id}">Close</button>
       </div>
     `
@@ -182,10 +188,32 @@ const renderOrders = () => {
       (order) => `
       <div class="card" style="padding: 12px;">
         <strong>${order.market_id}</strong>
+        <div class="metric"><span>Action</span><span>${order.action}</span></div>
         <div class="metric"><span>Side</span><span>${order.side}</span></div>
         <div class="metric"><span>Price</span><span>${formatPercent(order.price)}</span></div>
         <div class="metric"><span>Status</span><span>${order.status}</span></div>
         <button class="danger" data-cancel="${order.order_id}">Cancel</button>
+      </div>
+    `
+    )
+    .join("");
+};
+
+const renderFills = () => {
+  if (!state.fills || state.fills.length === 0) {
+    elements.fills.innerHTML = '<p class="warning">No fills yet.</p>';
+    return;
+  }
+  elements.fills.innerHTML = state.fills
+    .slice(0, 6)
+    .map(
+      (fill) => `
+      <div class="card" style="padding: 12px;">
+        <strong>${fill.market_id}</strong>
+        <div class="metric"><span>Action</span><span>${fill.action}</span></div>
+        <div class="metric"><span>Side</span><span>${fill.side}</span></div>
+        <div class="metric"><span>Price</span><span>${formatPercent(fill.price)}</span></div>
+        <div class="metric"><span>Qty</span><span>${fill.qty}</span></div>
       </div>
     `
     )
@@ -214,7 +242,11 @@ const updateLog = (entries) => {
   elements.log.innerHTML = entries
     .map(
       (entry) =>
-        `<div class="log-entry"><strong>${new Date(entry.timestamp).toLocaleTimeString()}</strong> — ${entry.message}</div>`
+        `<div class="log-entry"><strong>${new Date(entry.timestamp).toLocaleTimeString()}</strong> — ${
+          entry.message || `${entry.market_id} ${entry.action}`
+        }${entry.rationale ? `<div class="warning">${entry.rationale}</div>` : ""}${
+          entry.advisory?.explanations ? `<div>${entry.advisory.explanations.join("<br />")}</div>` : ""
+        }</div>`
     )
     .join("");
 };
@@ -321,7 +353,8 @@ const loadInitial = async () => {
   }
   if (kalshiRes.ok) {
     const kalshi = await kalshiRes.json();
-    setConnectionStatus(elements.kalshiStatus, kalshi.connected, "Kalshi");
+    const meta = kalshi.environment ? `${kalshi.environment}${kalshi.last_error_summary ? " · error" : ""}` : "";
+    setConnectionStatus(elements.kalshiStatus, kalshi.connected, "Kalshi", meta);
   }
   if (configRes.ok) {
     const config = await configRes.json();
@@ -331,6 +364,7 @@ const loadInitial = async () => {
     const audit = await auditRes.json();
     state.audit = audit.records || [];
     renderAudit();
+    updateLog(state.audit);
   }
 };
 
@@ -412,6 +446,14 @@ const stopBot = async () => {
   }
 };
 
+const killBot = async () => {
+  const response = await fetch("/bot/kill", { method: "POST" });
+  if (response.ok) {
+    elements.start.disabled = false;
+    elements.stop.disabled = true;
+  }
+};
+
 const connectWebSocket = () => {
   const protocol = window.location.protocol === "https:" ? "wss" : "ws";
   const socket = new WebSocket(`${protocol}://${window.location.host}/ws`);
@@ -441,7 +483,6 @@ const connectWebSocket = () => {
     }
     if (message.type === "activity") {
       state.activity = message.data.entries;
-      updateLog(state.activity);
     }
   });
 
@@ -451,11 +492,16 @@ const connectWebSocket = () => {
 };
 
 const refreshOrders = async () => {
-  const response = await fetch("/orders");
-  if (response.ok) {
-    const data = await response.json();
+  const [ordersRes, fillsRes] = await Promise.all([fetch("/orders"), fetch("/fills")]);
+  if (ordersRes.ok) {
+    const data = await ordersRes.json();
     state.orders = data.orders || [];
     renderOrders();
+  }
+  if (fillsRes.ok) {
+    const data = await fillsRes.json();
+    state.fills = data.fills || [];
+    renderFills();
   }
 };
 
@@ -465,6 +511,7 @@ const refreshAudit = async () => {
     const data = await response.json();
     state.audit = data.records || [];
     renderAudit();
+    updateLog(state.audit);
   }
 };
 
@@ -519,6 +566,7 @@ const handleFilter = (event) => {
 
 elements.start.addEventListener("click", startBot);
 elements.stop.addEventListener("click", stopBot);
+elements.killBot.addEventListener("click", killBot);
 elements.saveConfig.addEventListener("click", saveConfig);
 elements.applyMode.addEventListener("click", applyMode);
 elements.table.addEventListener("click", handleTableClick);
@@ -536,6 +584,7 @@ connectWebSocket();
 updateMetrics();
 renderPositions();
 renderOrders();
+renderFills();
 updateLog([]);
 setInterval(refreshOrders, 5000);
 setInterval(refreshAudit, 15000);

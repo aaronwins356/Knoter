@@ -5,12 +5,12 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Deque, Dict, List, Optional
 
-from .broker import KalshiBroker, PaperBroker
+from .broker.kalshi import KalshiBroker, KalshiClient
+from .broker.paper import PaperBroker
 from .config import load_config
-from .kalshi_client import KalshiClient
 from .models import ActivityEntry, BotConfig, MarketSnapshot, Order, Position, ScanSnapshot, StatusSnapshot, TradingMode
 from .openai_client import OpenAIClient
-from .risk import RiskManager
+from .risk.risk_manager import RiskManager
 from .storage import fetch_activity, init_db
 
 
@@ -28,11 +28,14 @@ class BotState:
         init_db()
         self.config: BotConfig = load_config()
         self.kalshi_client = KalshiClient()
-        self.kalshi_broker = KalshiBroker(self.kalshi_client)
+        self.kalshi_broker = KalshiBroker(
+            self.kalshi_client, self.config.live_trading_enabled, self.config.live_confirm
+        )
         self.paper_broker = PaperBroker()
         self.openai = OpenAIClient()
         self.risk = RiskManager(self.config.risk_limits)
         self.running: bool = False
+        self.killed: bool = False
         self.task = None
         self.market_state: Dict[str, MarketState] = {}
         self.last_scan: Optional[ScanSnapshot] = None
@@ -46,7 +49,11 @@ class BotState:
 
     @property
     def broker(self):
-        if self.config.trading_mode == TradingMode.LIVE and self.config.live_trading_enabled:
+        if (
+            self.config.trading_mode == TradingMode.LIVE
+            and self.config.live_trading_enabled
+            and self.config.live_confirm == "ENABLE LIVE TRADING"
+        ):
             return self.kalshi_broker
         return self.paper_broker
 

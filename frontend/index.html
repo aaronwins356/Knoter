@@ -338,6 +338,7 @@
             <button id="apply-mode" class="secondary">Apply mode</button>
             <button id="start-bot" class="primary">Start bot</button>
             <button id="stop-bot" class="secondary" disabled>Pause</button>
+            <button id="kill-bot" class="danger">Emergency Kill</button>
           </div>
           <div class="banner" id="live-warning">
             LIVE MODE ENABLED: Real orders can be placed. Verify limits before running.
@@ -523,6 +524,10 @@
               <div>
                 <h3>Open Orders</h3>
                 <div id="orders" class="stack"></div>
+              </div>
+              <div>
+                <h3>Recent Fills</h3>
+                <div id="fills" class="stack"></div>
               </div>
             </div>
           </div>
