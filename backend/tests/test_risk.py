@@ -39,3 +39,12 @@ def test_risk_manager_blocks_on_max_positions():
     allowed, reason = manager.can_trade()
     assert allowed is False
     assert "positions" in reason.lower()
+
+
+def test_risk_manager_blocks_on_exposure_dollars():
+    limits = RiskLimits(max_exposure_dollars=100.0)
+    manager = RiskManager(limits)
+    manager.update_exposure(exposure_contracts=0, exposure_dollars=150.0, active_positions=0)
+    allowed, reason = manager.can_trade()
+    assert allowed is False
+    assert "Exposure dollars" in reason

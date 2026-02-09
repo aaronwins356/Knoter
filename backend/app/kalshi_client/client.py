@@ -165,10 +165,47 @@ class KalshiClient:
                 break
         return markets
 
+    def list_series(
+        self,
+        params: Optional[Dict[str, Any]] = None,
+        fetch_all: bool = True,
+    ) -> List[Dict[str, Any]]:
+        series: List[Dict[str, Any]] = []
+        cursor: Optional[str] = None
+        while True:
+            request_params = dict(params or {})
+            if cursor:
+                request_params["cursor"] = cursor
+            payload = self._request("GET", "/series", params=request_params)
+            series.extend(payload.get("series", []))
+            cursor = payload.get("cursor") or payload.get("next_cursor")
+            if not fetch_all or not cursor:
+                break
+        return series
+
+    def list_events(
+        self,
+        params: Optional[Dict[str, Any]] = None,
+        fetch_all: bool = True,
+    ) -> List[Dict[str, Any]]:
+        events: List[Dict[str, Any]] = []
+        cursor: Optional[str] = None
+        while True:
+            request_params = dict(params or {})
+            if cursor:
+                request_params["cursor"] = cursor
+            payload = self._request("GET", "/events", params=request_params)
+            events.extend(payload.get("events", []))
+            cursor = payload.get("cursor") or payload.get("next_cursor")
+            if not fetch_all or not cursor:
+                break
+        return events
+
     def get_market(self, ticker: str) -> Dict[str, Any]:
         return self._request("GET", f"/markets/{ticker}")
 
     def place_order(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        self._validate_order_payload(payload)
         return self._request("POST", "/portfolio/orders", payload=payload)
 
     def cancel_order(self, order_id: str) -> Dict[str, Any]:
@@ -196,5 +233,33 @@ class KalshiClient:
             "side": side,
             "type": order_type,
             "price": round(price, 4),
-            "size": qty,
+            "count": qty,
         }
+
+    def _validate_order_payload(self, payload: Dict[str, Any]) -> None:
+        ticker = payload.get("ticker")
+        action = payload.get("action")
+        side = payload.get("side")
+        qty = payload.get("count") or payload.get("size")
+        price = payload.get("price")
+        if not ticker or not isinstance(ticker, str):
+            raise ValueError("Order payload missing ticker")
+        if action not in {"buy", "sell"}:
+            raise ValueError("Order payload action must be buy or sell")
+        if side not in {"yes", "no"}:
+            raise ValueError("Order payload side must be yes or no")
+        if qty is None or int(qty) <= 0:
+            raise ValueError("Order payload count must be positive")
+        if price is None or not (0.0 <= float(price) <= 1.0):
+            raise ValueError("Order payload price must be between 0 and 1 dollars")
+        log_event(
+            "kalshi_order_request",
+            {
+                "ticker": ticker,
+                "action": action,
+                "side": side,
+                "price": round(float(price), 4),
+                "count": int(qty),
+                "type": payload.get("type"),
+            },
+        )

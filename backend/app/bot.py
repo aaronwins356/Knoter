@@ -6,8 +6,8 @@ from typing import List, Optional
 
 from .execution_engine.order_manager import OrderManager
 from .logging_utils import log_event
-from .models import DecisionRecord, MarketSnapshot, Position, TradingMode
-from .storage import log_activity, log_decision, upsert_position
+from .models import DecisionRecord, MarketSnapshot, Order, Position, TradingMode
+from .storage import log_activity, log_decision, upsert_order, upsert_position
 from .strategy.engine import compute_pnl_pct, config_hash, decide_entry, decide_exit
 from .strategy.scanner import scan_markets
 from .state import MarketState
@@ -25,17 +25,27 @@ def build_advisor_prompt(snapshot: MarketSnapshot, action: str, rationale: str, 
     )
 
 
-def record_decision(state, snapshot: MarketSnapshot, action: str, rationale: str, advisory=None, order_ids=None) -> None:
+def record_decision(
+    state,
+    snapshot: MarketSnapshot,
+    action: str,
+    reason_code: str,
+    rationale: str,
+    advisory=None,
+    order_ids=None,
+) -> None:
     record = DecisionRecord(
         timestamp=datetime.now(tz=timezone.utc),
         market_id=snapshot.market_id,
         action=action,
+        reason_code=reason_code,
         qualifies=snapshot.qualifies,
         scores={
             "volatility_pct": snapshot.volatility_pct,
             "spread_pct": snapshot.spread_pct,
             "liquidity_score": snapshot.liquidity_score,
             "overall_score": snapshot.overall_score,
+            "time_to_close_minutes": snapshot.time_to_resolution_minutes,
         },
         rationale=rationale,
         config_hash=config_hash(state.config),
@@ -109,7 +119,14 @@ async def maybe_open_trade(state) -> None:
             expected_edge_cost_pct=_expected_edge_cost_pct(snapshot, state.config),
         )
         advisory = _safe_advisor(state, snapshot, decision.action, decision.rationale)
-        record_decision(state, snapshot, decision.action, decision.rationale, advisory=advisory)
+        record_decision(
+            state,
+            snapshot,
+            decision.action,
+            decision.reason_code,
+            decision.rationale,
+            advisory=advisory,
+        )
         if advisory and advisory.get("veto") and advisory.get("confidence", 0) > 0.7:
             entry = state.add_activity(
                 f"Advisor vetoed trade on {snapshot.name} (confidence {advisory.get('confidence'):.2f}).",
@@ -127,16 +144,16 @@ async def maybe_open_trade(state) -> None:
             market_id=snapshot.market_id,
             market_name=snapshot.name,
             side=decision.side,
-            qty=state.config.trade_sizing.order_size,
-            entry_price=decision.price,
-            current_price=decision.price,
+            qty=result.filled_qty or state.config.trade_sizing.order_size,
+            entry_price=result.avg_fill_price or decision.price,
+            current_price=result.avg_fill_price or decision.price,
             take_profit_pct=state.config.exit.take_profit_pct,
             stop_loss_pct=state.config.exit.stop_loss_pct,
             max_hold_seconds=state.config.exit.max_hold_seconds,
             close_before_resolution_minutes=state.config.exit.close_before_resolution_minutes,
             opened_at=now,
         )
-        if result.status == "filled":
+        if result.filled_qty:
             state.positions[position.position_id] = position
             state.trades_executed += 1
             if market_state:
@@ -162,6 +179,7 @@ async def maybe_open_trade(state) -> None:
                 state,
                 snapshot,
                 "ENTER",
+                decision.reason_code,
                 decision.rationale,
                 advisory=advisory,
                 order_ids=[result.order_id],
@@ -219,10 +237,77 @@ async def update_positions(state) -> None:
                 state,
                 snapshot,
                 decision.action,
+                decision.reason_code,
                 decision.rationale,
                 order_ids=[result.order_id],
             )
         upsert_position(position)
+
+
+def reconcile_broker_state(state) -> None:
+    if state.config.trading_mode != TradingMode.LIVE:
+        return
+    try:
+        open_orders = state.broker.get_open_orders()
+    except Exception as exc:  # noqa: BLE001
+        log_event("broker_orders_error", {"error": str(exc)})
+        open_orders = []
+    try:
+        broker_positions = state.broker.get_positions()
+    except Exception as exc:  # noqa: BLE001
+        log_event("broker_positions_error", {"error": str(exc)})
+        return
+
+    now = datetime.now(tz=timezone.utc)
+    for order in open_orders:
+        order_id = order.get("order_id") or order.get("id")
+        market_id = order.get("ticker") or order.get("market_ticker") or order.get("market_id")
+        if not order_id or not market_id:
+            continue
+        upsert_order(
+            Order(
+                order_id=order_id,
+                market_id=market_id,
+                action=order.get("action", "buy"),
+                side=order.get("side", "yes"),
+                price=float(order.get("price") or order.get("price_dollars") or 0.0),
+                qty=int(order.get("count") or order.get("size") or 0),
+                status=order.get("status", "open"),
+                created_at=now,
+                filled_at=None,
+            )
+        )
+    for payload in broker_positions:
+        market_id = payload.get("ticker") or payload.get("market_ticker") or payload.get("market_id")
+        side = payload.get("side") or payload.get("position_side")
+        qty = payload.get("count") or payload.get("size") or payload.get("quantity") or payload.get("position")
+        entry_price = payload.get("avg_price_dollars") or payload.get("average_price_dollars") or payload.get(
+            "avg_entry_price_dollars"
+        )
+        if not market_id or not side or qty is None or entry_price is None:
+            continue
+        existing = next((pos for pos in state.positions.values() if pos.market_id == market_id), None)
+        if existing:
+            existing.qty = int(qty)
+            existing.entry_price = float(entry_price)
+            upsert_position(existing)
+        else:
+            position = Position(
+                position_id=f"pos-{market_id}",
+                market_id=market_id,
+                market_name=market_id,
+                side=side,
+                qty=int(qty),
+                entry_price=float(entry_price),
+                current_price=float(entry_price),
+                take_profit_pct=state.config.exit.take_profit_pct,
+                stop_loss_pct=state.config.exit.stop_loss_pct,
+                max_hold_seconds=state.config.exit.max_hold_seconds,
+                close_before_resolution_minutes=state.config.exit.close_before_resolution_minutes,
+                opened_at=now,
+            )
+            state.positions[position.position_id] = position
+            upsert_position(position)
 
 
 def handle_kill_switch(state) -> None:
@@ -236,16 +321,21 @@ def handle_kill_switch(state) -> None:
     except Exception as exc:  # noqa: BLE001
         log_event("kill_switch_error", {"error": str(exc)})
     state.running = False
+    state.killed = True
     state.next_action = "Kill switch engaged"
 
 
 async def run_bot(state, publish) -> None:
     state.next_action = "Scanning for entries"
     while state.running:
+        if state.killed:
+            state.running = False
+            break
         handle_kill_switch(state)
         scan_markets(state)
         await update_positions(state)
         await maybe_open_trade(state)
+        reconcile_broker_state(state)
 
         await publish("scan", state.last_scan.model_dump() if state.last_scan else {})
         await publish("positions", {"positions": [pos.model_dump() for pos in state.positions.values()]})

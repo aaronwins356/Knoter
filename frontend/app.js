@@ -146,6 +146,7 @@ const renderMarkets = () => {
           <td>${market.overall_score.toFixed(1)}</td>
           <td>${market.volatility_pct.toFixed(2)}%</td>
           <td>${market.spread_pct.toFixed(2)}%</td>
+          <td>${market.time_to_resolution_minutes.toFixed(0)}m</td>
           <td>${market.qualifies ? "Yes" : "No"}</td>
         </tr>
       `
@@ -230,7 +231,7 @@ const renderAudit = () => {
     .map(
       (entry) => `
       <div class="log-entry">
-        <strong>${new Date(entry.timestamp).toLocaleTimeString()}</strong> — ${entry.market_id} — ${entry.action}
+        <strong>${new Date(entry.timestamp).toLocaleTimeString()}</strong> — ${entry.market_id} — ${entry.reason_code}
         <div class="warning">${entry.rationale}</div>
       </div>
     `
@@ -240,6 +241,34 @@ const renderAudit = () => {
 
 const updateLog = (entries) => {
   if (!entries) return;
+  if (entries.length > 0 && entries[0].market_id) {
+    const grouped = entries.reduce((acc, entry) => {
+      acc[entry.market_id] = acc[entry.market_id] || [];
+      acc[entry.market_id].push(entry);
+      return acc;
+    }, {});
+    elements.log.innerHTML = Object.entries(grouped)
+      .map(
+        ([marketId, items]) => `
+        <div class="log-entry">
+          <strong>${marketId}</strong>
+          ${items
+            .slice(0, 3)
+            .map(
+              (item) => `
+              <div>
+                ${new Date(item.timestamp).toLocaleTimeString()} — ${item.reason_code}
+                <div class="warning">${item.rationale}</div>
+              </div>
+            `
+            )
+            .join("")}
+        </div>
+      `
+      )
+      .join("");
+    return;
+  }
   elements.log.innerHTML = entries
     .map(
       (entry) =>
@@ -293,6 +322,7 @@ const loadMarketDetail = async (marketId) => {
     <div class="metric"><span>Liquidity</span><span>${data.snapshot.liquidity_score.toFixed(1)}</span></div>
     <div class="metric"><span>Score</span><span>${data.snapshot.overall_score.toFixed(1)}</span></div>
     <div class="metric"><span>Resolution</span><span>${data.snapshot.time_to_resolution_minutes.toFixed(0)}m</span></div>
+    <div class="metric"><span>Mid</span><span>${formatPercent(data.snapshot.mid_price)}</span></div>
   `;
   if (data.audit.length === 0) {
     elements.drawerAudit.innerHTML = '<p class="warning">No audit records yet.</p>';
@@ -301,7 +331,7 @@ const loadMarketDetail = async (marketId) => {
       .map(
         (entry) => `
         <div class="log-entry">
-          <strong>${new Date(entry.timestamp).toLocaleTimeString()}</strong> — ${entry.action}
+          <strong>${new Date(entry.timestamp).toLocaleTimeString()}</strong> — ${entry.reason_code}
           <div class="warning">${entry.rationale}</div>
           ${entry.advisory ? `<div>${entry.advisory.explanations?.join("<br />") || ""}</div>` : ""}
         </div>
@@ -500,6 +530,7 @@ const connectWebSocket = () => {
     }
     if (message.type === "activity") {
       state.activity = message.data.entries;
+      updateLog(state.audit && state.audit.length ? state.audit : state.activity);
     }
   });
 

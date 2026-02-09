@@ -4,23 +4,26 @@ from datetime import datetime, timedelta, timezone
 from app.bot import maybe_open_trade, update_positions
 from app.models import MarketSnapshot, ScanSnapshot, TradingMode
 from app.state import BotState, MarketState
+from app.strategy.scanner import scan_markets
 
 
 def test_smoke_cycle_paper_broker():
     state = BotState()
     state.config.trading_mode = TradingMode.PAPER
     state.config.entry.momentum_window = 2
-    state.config.entry.momentum_threshold_pct = 0.0
+    state.config.entry.momentum_threshold_pct = 0.01
     state.config.scoring.vol_threshold = 0.0
     state.config.scoring.max_spread_pct = 50.0
     state.config.scoring.min_liquidity_score = 0.0
     state.config.exit.take_profit_pct = 1.0
     state.config.entry.fee_pct = 0.0
+    state.config.market_filters.event_type = "sports"
 
-    market_id = "DEMO-MKT"
-    market_state = MarketState()
-    market_state.prices.extend([0.5, 0.52])
-    state.market_state[market_id] = market_state
+    scan = scan_markets(state)
+    assert scan.markets
+    market_id = scan.markets[0].market_id
+    market_state = state.market_state[market_id]
+    market_state.prices.append(market_state.prices[-1] + 0.02)
 
     snapshot = MarketSnapshot(
         market_id=market_id,
