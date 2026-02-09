@@ -16,10 +16,20 @@ from .bot import run_bot
 from .execution_engine.order_manager import OrderManager
 from .config import load_config, save_config
 from .logging_utils import configure_logging, log_event
-from .models import BotConfig, DecisionRecord, DryRunResult, HealthStatus, KalshiStatus, TradingMode
+from .models import BotConfig, DecisionRecord, DryRunResult, HealthStatus, KalshiStatus, Order, TradingMode
 from .risk.risk_manager import RiskManager
 from .state import BotState
-from .storage import fetch_decisions, fetch_fills, fetch_orders, fetch_positions, fetch_snapshots, init_db, upsert_position
+from .storage import (
+    fetch_decisions,
+    fetch_fills,
+    fetch_orders,
+    fetch_positions,
+    fetch_snapshots,
+    init_db,
+    log_fill,
+    upsert_order,
+    upsert_position,
+)
 from .strategy.engine import compute_pnl_pct, decide_entry, decide_exit
 from .strategy.scanner import scan_markets
 from .strategy.scoring import MarketMetrics
@@ -122,6 +132,7 @@ async def update_config(payload: Dict[str, Any]) -> BotConfig:
     state.risk = RiskManager(state.config.risk_limits)
     state.kalshi_broker.live_gate_enabled = state.config.live_trading_enabled
     state.kalshi_broker.live_confirm = state.config.live_confirm
+    state.order_manager = OrderManager(state.broker, state.config)
     save_config(state.config)
     return state.config
 
@@ -231,6 +242,40 @@ async def cancel_order(order_id: str) -> Dict[str, str]:
         raise HTTPException(status_code=400, detail="Unable to cancel order") from exc
 
 
+@app.post("/orders/place")
+async def place_order(payload: Dict[str, Any]) -> Dict[str, Any]:
+    if state.config.trading_mode != TradingMode.PAPER:
+        raise HTTPException(status_code=400, detail="Manual orders only allowed in paper mode")
+    ticker = payload.get("ticker")
+    side = payload.get("side")
+    action = payload.get("action", "buy")
+    price = payload.get("price")
+    qty = payload.get("qty", 1)
+    if not ticker or not side or price is None:
+        raise HTTPException(status_code=400, detail="Missing ticker/side/price")
+    try:
+        response = state.broker.place_order(ticker, action, side, float(price), int(qty))
+        now = datetime.now(tz=timezone.utc)
+        order = Order(
+            order_id=response.get("order_id", ""),
+            market_id=ticker,
+            action=action,
+            side=side,
+            price=float(price),
+            qty=int(qty),
+            status=response.get("status", "open"),
+            created_at=now,
+            filled_at=now if response.get("status") == "filled" else None,
+        )
+        upsert_order(order)
+        if response.get("filled_qty"):
+            log_fill(order.order_id, ticker, action, side, float(price), int(response.get("filled_qty", 0)))
+        return response
+    except Exception as exc:  # noqa: BLE001
+        log_event("manual_order_error", {"error": str(exc)})
+        raise HTTPException(status_code=400, detail="Unable to place order") from exc
+
+
 @app.post("/positions/{position_id}/close")
 async def close_position(position_id: str) -> Dict[str, str]:
     position = state.positions.get(position_id)
@@ -280,7 +325,7 @@ async def flatten_all() -> Dict[str, Any]:
         except Exception as exc:  # noqa: BLE001
             errors.append(f"cancel:{order_id}:{exc}")
 
-    order_manager = OrderManager(state.broker, state.config)
+    order_manager = state.order_manager
     for position in list(state.positions.values()):
         if position.status != "open":
             continue
@@ -336,16 +381,16 @@ async def dry_run() -> DryRunResult:
             expected_edge_cost_pct=snapshot.spread_pct + state.config.entry.fee_pct,
         )
         decisions.append(
-                DecisionRecord(
-                    timestamp=scan.timestamp,
-                    market_id=snapshot.market_id,
-                    action=decision.action,
-                    reason_code=decision.reason_code,
-                    qualifies=snapshot.qualifies,
-                    scores={**metrics.__dict__, "expected_edge_pct": decision.expected_edge_pct},
-                    rationale=decision.rationale,
-                    config_hash="dryrun",
-                    order_ids=[],
+            DecisionRecord(
+                timestamp=scan.timestamp,
+                market_id=snapshot.market_id,
+                action=decision.action,
+                reason_code=decision.reason_code,
+                qualifies=snapshot.qualifies,
+                scores={**metrics.__dict__, "expected_edge_pct": decision.expected_edge_pct},
+                rationale=decision.rationale,
+                config_hash="dryrun",
+                order_ids=[],
                 fills=[],
                 advisory=None,
             )

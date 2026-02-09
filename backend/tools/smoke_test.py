@@ -6,7 +6,7 @@ import os
 import sys
 from typing import Any, Dict
 
-from app.kalshi_client import KalshiClient
+import requests
 
 
 def _print_step(label: str, ok: bool, detail: str = "") -> None:
@@ -15,83 +15,106 @@ def _print_step(label: str, ok: bool, detail: str = "") -> None:
     print(f"[{status}] {label}{suffix}")
 
 
-def _require_config(client: KalshiClient) -> bool:
-    if not client.configured():
-        _print_step("Credentials", False, "Missing KALSHI_API_KEY_ID/KALSHI_API_KEY or private key.")
-        return False
-    if client.environment_label() != "demo":
-        _print_step("Environment", False, "KALSHI_ENV must be demo for smoke test.")
-        return False
-    _print_step("Credentials", True, "Configured for demo.")
-    return True
+def _base_url() -> str:
+    return os.getenv("KNOTER_API_URL", "http://localhost:8000")
 
 
-def _get_first_market(client: KalshiClient) -> Dict[str, Any]:
-    markets = client.list_markets(params={"status": "open", "limit": 5}, fetch_all=False)
-    return markets[0] if markets else {}
+def _get(path: str) -> requests.Response:
+    return requests.get(f"{_base_url()}{path}", timeout=10)
+
+
+def _post(path: str, payload: Dict[str, Any] | None = None) -> requests.Response:
+    return requests.post(f"{_base_url()}{path}", json=payload, timeout=10)
 
 
 def run() -> int:
-    client = KalshiClient()
-    if not _require_config(client):
+    try:
+        health = _get("/health")
+        _print_step("/health", health.ok, str(health.status_code))
+        if not health.ok:
+            return 1
+    except Exception as exc:  # noqa: BLE001
+        _print_step("/health", False, str(exc))
+        return 1
+
+    creds_present = bool(os.getenv("KALSHI_API_KEY_ID") or os.getenv("KALSHI_API_KEY"))
+    if creds_present:
+        try:
+            status = _get("/kalshi/status")
+            ok = status.ok and status.json().get("connected") is True
+            _print_step("/kalshi/status", ok, status.text[:200])
+            if not ok:
+                return 1
+        except Exception as exc:  # noqa: BLE001
+            _print_step("/kalshi/status", False, str(exc))
+            return 1
+    else:
+        _print_step("/kalshi/status", True, "Skipped (no credentials)")
+
+    try:
+        scan = _get("/markets/scan")
+        scan_data = scan.json() if scan.ok else {}
+        markets = scan_data.get("markets") or []
+        if not markets:
+            _print_step("/markets/scan", False, "Empty scan (run /bot/dryrun next)")
+        else:
+            _print_step("/markets/scan", True, f"markets={len(markets)}")
+    except Exception as exc:  # noqa: BLE001
+        _print_step("/markets/scan", False, str(exc))
         return 1
 
     try:
-        balance = client.get_portfolio_balance()
-        _print_step("Fetch balance", True, f"keys={list(balance.keys())[:3]}")
+        dryrun = _post("/bot/dryrun")
+        ok = dryrun.ok and dryrun.json().get("scan", {}).get("markets")
+        _print_step("/bot/dryrun", bool(ok), dryrun.text[:200])
+        if not ok:
+            return 1
     except Exception as exc:  # noqa: BLE001
-        _print_step("Fetch balance", False, str(exc))
-        return 1
-
-    market = _get_first_market(client)
-    if not market:
-        _print_step("Fetch markets", False, "No markets returned.")
-        return 1
-    _print_step("Fetch markets", True, market.get("ticker", "unknown"))
-
-    ticker = market.get("ticker") or market.get("id")
-    if not ticker:
-        _print_step("Market ticker", False, "Missing ticker.")
+        _print_step("/bot/dryrun", False, str(exc))
         return 1
 
     try:
-        details = client.get_market(ticker)
+        config = _get("/config")
+        if not config.ok:
+            _print_step("/config", False, config.text[:200])
+            return 1
+        config_data = config.json()
+        if config_data.get("trading_mode") != "paper":
+            _print_step("paper order", False, "Trading mode is not paper")
+            return 1
     except Exception as exc:  # noqa: BLE001
-        _print_step("Fetch market detail", False, str(exc))
-        return 1
-
-    mid = float(details.get("mid_price", details.get("last_price", 0.5)))
-    price = max(min(mid - 0.01, 0.99), 0.01)
-    payload = client.format_order_payload(ticker, "buy", "yes", price, 1, order_type="limit")
-
-    order_id = None
-    try:
-        order = client.place_order(payload)
-        order_id = order.get("order_id") or order.get("id")
-        _print_step("Place order", bool(order_id), f"order_id={order_id}")
-    except Exception as exc:  # noqa: BLE001
-        _print_step("Place order", False, str(exc))
+        _print_step("/config", False, str(exc))
         return 1
 
     try:
-        cancel = client.cancel_order(order_id)
-        _print_step("Cancel order", True, f"status={cancel.get('status')}")
+        scan_data = dryrun.json().get("scan", {})
+        first_market = (scan_data.get("markets") or [{}])[0]
+        ticker = first_market.get("market_id") or first_market.get("ticker")
+        if not ticker:
+            _print_step("paper order", False, "Missing ticker from scan")
+            return 1
+        order = _post(
+            "/orders/place",
+            {"ticker": ticker, "side": "yes", "action": "buy", "price": 0.51, "qty": 1},
+        )
+        if not order.ok:
+            _print_step("paper order", False, order.text[:200])
+            return 1
+        order_id = order.json().get("order_id")
+        _print_step("paper order", bool(order_id), f"order_id={order_id}")
+        if not order_id:
+            return 1
+        cancel = _post(f"/orders/{order_id}/cancel")
+        _print_step("cancel order", cancel.ok, cancel.text[:200])
+        if not cancel.ok:
+            return 1
+        orders = _get("/orders")
+        ok = orders.ok and any(item.get("order_id") == order_id for item in orders.json().get("orders", []))
+        _print_step("/orders", ok, orders.text[:200])
+        if not ok:
+            return 1
     except Exception as exc:  # noqa: BLE001
-        _print_step("Cancel order", False, str(exc))
-        return 1
-
-    try:
-        orders = client.get_open_orders()
-        _print_step("Fetch orders", True, f"open_orders={len(orders)}")
-    except Exception as exc:  # noqa: BLE001
-        _print_step("Fetch orders", False, str(exc))
-        return 1
-
-    try:
-        fills = client.get_fills()
-        _print_step("Fetch fills", True, f"fills={len(fills)}")
-    except Exception as exc:  # noqa: BLE001
-        _print_step("Fetch fills", False, str(exc))
+        _print_step("paper order", False, str(exc))
         return 1
 
     return 0

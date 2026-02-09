@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from ..market_data import DEMO_MARKETS, MarketInfo
+from ..market_data import DEMO_MARKETS, MarketInfo, MarketQuote, Quote
 from ..models import Order, Position
 from ..strategy.engine import compute_pnl_pct
 
@@ -26,36 +26,48 @@ class PaperBroker:
     def list_markets(self, event_type: str, time_window_hours: int) -> List[MarketInfo]:
         return [
             MarketInfo(
-                market_id=market.market_id,
-                name=market.name,
+                ticker=market.ticker,
+                title=market.name,
+                close_ts=None,
+                status="open",
                 category=market.category,
-                time_to_resolution_minutes=market.time_to_resolution_minutes,
+                raw_payload={
+                    "ticker": market.ticker,
+                    "title": market.name,
+                    "category": market.category,
+                },
             )
             for market in DEMO_MARKETS
             if market.category == event_type
         ]
 
-    def get_market_snapshot(self, market_id: str) -> Dict[str, float]:
+    def get_market_snapshot(self, ticker: str) -> MarketQuote:
         from datetime import datetime, timezone
 
         from ..market_data import demo_spread, deterministic_mid_price
 
-        market = next((m for m in DEMO_MARKETS if m.market_id == market_id), None)
+        market = next((m for m in DEMO_MARKETS if m.ticker == ticker), None)
         if not market:
-            return {}
+            return MarketQuote(
+                quote=Quote(0.0, 0.0, 0.0, 0.0, 0.0, False, "missing_demo_market"),
+                volume=0.0,
+                bid_depth=0.0,
+                ask_depth=0.0,
+                time_to_resolution_minutes=0.0,
+            )
         timestamp = datetime.now(tz=timezone.utc)
         mid = deterministic_mid_price(market, timestamp)
         spread = demo_spread(mid)
-        return {
-            "mid": mid,
-            "bid": round(mid - spread / 2, 4),
-            "ask": round(mid + spread / 2, 4),
-            "last": mid,
-            "volume": 200.0,
-            "bid_depth": 200.0,
-            "ask_depth": 200.0,
-            "time_to_resolution_minutes": market.time_to_resolution_minutes,
-        }
+        bid = round(mid - spread / 2, 4)
+        ask = round(mid + spread / 2, 4)
+        quote = Quote(bid=bid, ask=ask, mid=mid, last=mid, spread_pct=round((ask - bid) / mid * 100, 4), valid=True)
+        return MarketQuote(
+            quote=quote,
+            volume=200.0,
+            bid_depth=200.0,
+            ask_depth=200.0,
+            time_to_resolution_minutes=market.time_to_resolution_minutes,
+        )
 
     def place_order(self, ticker: str, action: str, side: str, price: float, qty: int) -> Dict[str, Any]:
         now = datetime.now(tz=timezone.utc)

@@ -2,7 +2,9 @@ from datetime import datetime, timedelta, timezone
 import asyncio
 
 from app.execution_engine.order_manager import OrderManager
+from app.market_data import MarketQuote, Quote
 from app.models import BotConfig
+from app.storage import init_db
 from app.strategy.engine import decide_entry, decide_exit
 
 
@@ -21,11 +23,18 @@ class FakeBroker:
         return {"status": "cancelled"}
 
     def get_market_snapshot(self, ticker):
-        return {"bid": 0.49, "ask": 0.51}
+        return MarketQuote(
+            quote=Quote(bid=0.49, ask=0.51, mid=0.5, last=0.5, spread_pct=4.0, valid=True),
+            volume=100.0,
+            bid_depth=50.0,
+            ask_depth=50.0,
+            time_to_resolution_minutes=120.0,
+        )
 
 
 class DummyState:
     def __init__(self) -> None:
+        init_db()
         self.config = BotConfig()
         self.config.entry.max_replacements = 2
         self.config.entry.order_ttl_seconds = 0

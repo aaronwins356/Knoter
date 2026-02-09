@@ -1,4 +1,4 @@
-from app.market_data import normalize_market_prices
+from app.market_data import normalize_market_meta, normalize_quote
 
 
 def test_normalize_prices_prefers_dollars_fields():
@@ -9,20 +9,23 @@ def test_normalize_prices_prefers_dollars_fields():
         "volume": 120,
         "close_ts": 1_700_000_000,
     }
-    normalized = normalize_market_prices(payload, now_ts=1_699_999_000)
-    assert normalized["bid"] == 0.41
-    assert normalized["ask"] == 0.45
-    assert normalized["last"] == 0.44
+    quote = normalize_quote(payload)
+    meta = normalize_market_meta(payload, now_ts=1_699_999_000)
+    assert quote.bid == 0.41
+    assert quote.ask == 0.45
+    assert quote.last == 0.44
+    assert meta["minutes_to_resolution"] > 0
 
 
 def test_normalize_prices_falls_back_to_cent_fields():
     payload = {
-        "yes_bid": 0.2,
-        "yes_ask": 0.22,
-        "last_price": 0.21,
+        "yes_bid": 20,
+        "yes_ask": 22,
+        "last_price": 21,
         "minutes_to_expiry": 90,
     }
-    normalized = normalize_market_prices(payload)
-    assert normalized["bid"] == 0.2
-    assert normalized["ask"] == 0.22
-    assert normalized["minutes_to_resolution"] == 90
+    quote = normalize_quote(payload)
+    meta = normalize_market_meta(payload)
+    assert quote.bid == 0.2
+    assert quote.ask == 0.22
+    assert meta["minutes_to_resolution"] == 90

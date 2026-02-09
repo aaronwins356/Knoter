@@ -190,6 +190,8 @@ class StatusSnapshot(BaseModel):
     trades_executed: int
     open_positions: int
     event_pnl_pct: float
+    realized_pnl_pct: float
+    unrealized_pnl_pct: float
     high_vol_count: int
     sentiment_label: str
     next_action: str
