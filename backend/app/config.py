@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from .models import BotConfig
@@ -11,8 +12,12 @@ CONFIG_PATH = Path(__file__).resolve().parents[1] / "data" / "config.json"
 def load_config() -> BotConfig:
     if CONFIG_PATH.exists():
         data = json.loads(CONFIG_PATH.read_text())
-        return BotConfig(**data)
-    return BotConfig()
+        config = BotConfig(**data)
+    else:
+        config = BotConfig()
+    if os.getenv("KNOTER_LIVE_TRADING_ENABLED", "false").lower() in {"1", "true", "yes"}:
+        config.live_trading_enabled = True
+    return config
 
 
 def save_config(config: BotConfig) -> None:

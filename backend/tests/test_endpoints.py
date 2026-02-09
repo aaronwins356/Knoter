@@ -17,7 +17,7 @@ def test_config_round_trip():
     response = client.get("/config")
     assert response.status_code == 200
     payload = response.json()
-    payload["volatility_threshold"] = 7.5
+    payload["scoring"]["vol_threshold"] = 7.5
     update = client.post("/config", json=payload)
     assert update.status_code == 200
-    assert update.json()["volatility_threshold"] == 7.5
+    assert update.json()["scoring"]["vol_threshold"] == 7.5
