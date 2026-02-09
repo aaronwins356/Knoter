@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from ..market_data import DEMO_MARKETS, MarketInfo, MarketQuote, Quote
+from ..market_data import DEMO_MARKETS, MarketInfo, MarketQuote, Quote, normalize_quote_values
 from ..models import Order, Position
 from ..strategy.engine import compute_pnl_pct
 
@@ -49,7 +49,7 @@ class PaperBroker:
         market = next((m for m in DEMO_MARKETS if m.ticker == ticker), None)
         if not market:
             return MarketQuote(
-                quote=Quote(0.0, 0.0, 0.0, 0.0, 0.0, False, "missing_demo_market"),
+                quote=normalize_quote_values(None, None, None, None, reason="missing_demo_market"),
                 volume=0.0,
                 bid_depth=0.0,
                 ask_depth=0.0,
@@ -60,7 +60,7 @@ class PaperBroker:
         spread = demo_spread(mid)
         bid = round(mid - spread / 2, 4)
         ask = round(mid + spread / 2, 4)
-        quote = Quote(bid=bid, ask=ask, mid=mid, last=mid, spread_pct=round((ask - bid) / mid * 100, 4), valid=True)
+        quote = normalize_quote_values(bid=bid, ask=ask, mid=mid, last=mid)
         return MarketQuote(
             quote=quote,
             volume=200.0,

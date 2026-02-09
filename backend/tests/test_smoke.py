@@ -2,6 +2,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 
 from app.bot import maybe_open_trade, update_positions
+from app.broker.paper import PaperBroker
 from app.models import MarketSnapshot, ScanSnapshot, TradingMode
 from app.state import BotState, MarketState
 from app.strategy.scanner import scan_markets
@@ -55,3 +56,25 @@ def test_smoke_cycle_paper_broker():
     asyncio.run(update_positions(state))
     assert position.status == "closed"
     assert position.closed_at is not None
+
+
+def test_smoke_paper_trade_flow():
+    broker = PaperBroker()
+    markets = broker.list_markets("sports", 24)
+    assert markets
+
+    ticker = markets[0].ticker
+    snapshot = broker.get_market_snapshot(ticker)
+    quote = snapshot.quote
+    assert 0.0 <= quote.bid <= quote.ask <= 1.0
+    assert 0.0 <= quote.mid <= 1.0
+
+    order = broker.place_order(ticker, "buy", "yes", quote.ask, 1)
+    order_id = order["order_id"]
+    assert order_id
+
+    cancel = broker.cancel_order(order_id)
+    assert cancel["status"] == "cancelled"
+
+    stored = broker.get_order(order_id)
+    assert stored["status"] == "cancelled"
