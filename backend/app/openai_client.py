@@ -5,6 +5,8 @@ from typing import Optional
 
 import requests
 
+from .models import AdvisorOutput
+
 
 class OpenAIClient:
     def __init__(self) -> None:
@@ -15,7 +17,7 @@ class OpenAIClient:
     def configured(self) -> bool:
         return bool(self.api_key)
 
-    def summarize(self, prompt: str) -> Optional[str]:
+    def advise(self, prompt: str) -> Optional[AdvisorOutput]:
         if not self.configured():
             return None
         response = requests.post(
@@ -24,7 +26,13 @@ class OpenAIClient:
             json={
                 "model": self.model,
                 "messages": [
-                    {"role": "system", "content": "Summarize market context without hallucinating external news."},
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a trading advisor. Provide bullet explanations and risk warnings. "
+                            "Never recommend executing trades directly; only explain or suggest parameter tweaks."
+                        ),
+                    },
                     {"role": "user", "content": prompt},
                 ],
                 "temperature": 0.2,
@@ -32,4 +40,9 @@ class OpenAIClient:
             timeout=20,
         )
         response.raise_for_status()
-        return response.json()["choices"][0]["message"]["content"].strip()
+        content = response.json()["choices"][0]["message"]["content"].strip()
+        lines = [line.strip("- ") for line in content.splitlines() if line.strip()]
+        explanations = lines[:6] if lines else ["No advisory returned."]
+        warnings = [line for line in lines if "risk" in line.lower()][:3]
+        suggestions = [line for line in lines if "suggest" in line.lower()][:3]
+        return AdvisorOutput(explanations=explanations, warnings=warnings, suggestions=suggestions)

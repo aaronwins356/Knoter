@@ -1,22 +1,22 @@
-# Kalshi Volatility Trader
+# Knoter Trading Dashboard
 
-Production-focused Kalshi trading bot with a FastAPI backend and the existing HTML dashboard wired to live backend data.
-The system supports paper trading by default and can be switched to live trading once Kalshi credentials are configured.
+Production-focused Kalshi trading bot with a FastAPI backend and a vanilla HTML dashboard. The system defaults to paper
+trading, supports a gated LIVE mode, and logs every trading decision with auditability.
 
 ## Features
 
-- **Secure backend** with FastAPI, structured logs, audit trail, and SQLite persistence.
-- **Kalshi + OpenAI integration** via server-side environment variables only (no keys in browser).
-- **Risk controls**: max exposure, max concurrent positions, stop after N losses, event drawdown caps, kill switch.
-- **Volatility scoring** using microstructure signals (returns, spread, update activity, time-to-expiry weighting).
-- **Interactive dashboard** for live scan, activity log, and positions.
+- **Kalshi + OpenAI integrations** secured via server-side environment variables only (no keys in the browser).
+- **Paper vs LIVE mode** with explicit confirmation phrase and server-side enable flag.
+- **Trading engine** with deterministic entry/exit/cash-out rules and configurable thresholds.
+- **Risk safety controls**: max exposure, max loss per event/session, max loss streak, cooldowns, and kill switch.
+- **Audit logs** with CSV download and advisory explanations.
+- **Dashboard** with live scanner, trade detail drawer, and positions/orders management.
 
 ## Repository Layout
 
 ```
 backend/     FastAPI service + trading engine
-frontend/    Existing dashboard (HTML + JS)
-shared/      (optional if you want to add cross-language types)
+frontend/    Dashboard (HTML + JS)
 ```
 
 ## Setup
@@ -33,7 +33,7 @@ pip install -r requirements.txt
 Copy `.env.example` into `.env` and fill in your credentials:
 
 ```bash
-cp ../.env.example ../.env
+cp .env.example .env
 ```
 
 > **Important:** API keys are never stored in the database or exposed to the browser.
@@ -49,27 +49,30 @@ The dashboard is served at http://localhost:8000.
 
 ## Paper Trading (Default)
 
-The bot runs in paper mode by default (`paper_trading=true`) and uses deterministic pricing when Kalshi credentials are
+The bot runs in paper mode by default (`trading_mode=paper`) and uses deterministic pricing when Kalshi credentials are
 not configured. This is intended for safe, testable validation of the risk logic and UI.
 
 ## Enabling Live Trading
 
-1. Set `KALSHI_API_KEY` (and `KALSHI_API_SECRET` if needed) in your `.env`.
-2. Update `paper_trading` to `false` via `POST /config` or edit `backend/data/config.json`.
-3. Restart the backend.
+1. Set `KALSHI_API_KEY` and `KALSHI_API_SECRET` in your `.env`.
+2. Set `KNOTER_LIVE_TRADING_ENABLED=true` in your `.env` and restart the backend.
+3. In the dashboard, switch mode to LIVE and type the confirmation phrase **ENABLE LIVE TRADING**.
 
-> **Warning:** Live trading carries risk. Targets such as “5–6 trades of 3–5%” are aspirational, not guarantees. Always
-> set conservative limits and monitor exposure.
+> **Warning:** Live trading carries risk. No strategy guarantees returns. Always validate in paper mode first.
 
 ## API Endpoints
 
 - `GET /health` — service + connection status
+- `GET /kalshi/status` — Kalshi connectivity and masked account info
 - `GET /config` / `POST /config` — bot configuration
 - `GET /markets/scan` — latest scan snapshot
+- `GET /markets/{market_id}/detail` — market detail (prices, audit, scores)
 - `POST /bot/start` / `POST /bot/stop` — control bot
+- `POST /bot/dryrun` — run one scan cycle without placing orders
 - `GET /bot/status` — running status
-- `GET /positions` — stored positions
-- `GET /orders` — stored orders
+- `GET /positions` / `POST /positions/{position_id}/close` — positions
+- `GET /orders` / `POST /orders/{order_id}/cancel` — orders
+- `GET /audit` / `GET /audit/csv` — audit log
 - `WS /ws` — live updates (scan, status, positions, activity)
 
 ## Testing

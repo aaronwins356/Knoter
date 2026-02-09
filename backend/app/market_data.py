@@ -7,13 +7,21 @@ from typing import List
 
 
 @dataclass(frozen=True)
+class MarketInfo:
+    market_id: str
+    name: str
+    category: str
+    time_to_resolution_minutes: float
+
+
+@dataclass(frozen=True)
 class DemoMarket:
     market_id: str
     name: str
     category: str
     base_price: float
     sensitivity: float
-    time_to_expiry_hours: float
+    time_to_resolution_minutes: float
 
 
 DEMO_MARKETS: List[DemoMarket] = [
@@ -23,7 +31,7 @@ DEMO_MARKETS: List[DemoMarket] = [
         category="sports",
         base_price=0.56,
         sensitivity=0.11,
-        time_to_expiry_hours=18.0,
+        time_to_resolution_minutes=18.0 * 60,
     ),
     DemoMarket(
         market_id="ELECT-2024",
@@ -31,7 +39,7 @@ DEMO_MARKETS: List[DemoMarket] = [
         category="politics",
         base_price=0.42,
         sensitivity=0.14,
-        time_to_expiry_hours=96.0,
+        time_to_resolution_minutes=96.0 * 60,
     ),
     DemoMarket(
         market_id="FED-RATE",
@@ -39,7 +47,7 @@ DEMO_MARKETS: List[DemoMarket] = [
         category="finance",
         base_price=0.38,
         sensitivity=0.09,
-        time_to_expiry_hours=40.0,
+        time_to_resolution_minutes=40.0 * 60,
     ),
     DemoMarket(
         market_id="EARN-NVDA",
@@ -47,7 +55,7 @@ DEMO_MARKETS: List[DemoMarket] = [
         category="company",
         base_price=0.63,
         sensitivity=0.12,
-        time_to_expiry_hours=12.0,
+        time_to_resolution_minutes=12.0 * 60,
     ),
     DemoMarket(
         market_id="OIL-PRICE",
@@ -55,7 +63,7 @@ DEMO_MARKETS: List[DemoMarket] = [
         category="finance",
         base_price=0.29,
         sensitivity=0.16,
-        time_to_expiry_hours=55.0,
+        time_to_resolution_minutes=55.0 * 60,
     ),
     DemoMarket(
         market_id="NBA-PTS",
@@ -63,7 +71,7 @@ DEMO_MARKETS: List[DemoMarket] = [
         category="sports",
         base_price=0.51,
         sensitivity=0.08,
-        time_to_expiry_hours=8.0,
+        time_to_resolution_minutes=8.0 * 60,
     ),
 ]
 

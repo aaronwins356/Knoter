@@ -1,69 +1,124 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
+import json
 import os
+import random
+import time
 from datetime import datetime, timezone
-from typing import Dict, List
+from typing import Any, Dict, List, Optional
 
 import requests
 
-from .market_data import DEMO_MARKETS, DemoMarket, demo_spread, deterministic_mid_price
+from .logging_utils import log_event
+from .market_data import DEMO_MARKETS, DemoMarket, MarketInfo, demo_spread, deterministic_mid_price
 
 
 class KalshiClient:
     def __init__(self) -> None:
-        self.base_url = os.getenv("KALSHI_BASE_URL", "https://trading-api.kalshi.com")
+        self.base_url = os.getenv("KALSHI_BASE_URL", "https://trading-api.kalshi.com/trade-api/v2")
         self.api_key = os.getenv("KALSHI_API_KEY")
         self.api_secret = os.getenv("KALSHI_API_SECRET")
+        self.max_retries = int(os.getenv("KALSHI_MAX_RETRIES", "4"))
 
     def configured(self) -> bool:
-        return bool(self.api_key)
+        return bool(self.api_key and self.api_secret)
 
-    def list_markets(self, category: str) -> List[DemoMarket]:
+    def _signature_headers(self, method: str, path: str, body: str) -> Dict[str, str]:
+        timestamp = str(int(time.time() * 1000))
+        message = f"{timestamp}{method.upper()}{path}{body}"
+        signature = base64.b64encode(
+            hmac.new(self.api_secret.encode(), message.encode(), hashlib.sha256).digest()
+        ).decode()
+        return {
+            "KALSHI-ACCESS-KEY": self.api_key or "",
+            "KALSHI-ACCESS-SIGNATURE": signature,
+            "KALSHI-ACCESS-TIMESTAMP": timestamp,
+        }
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        params: Optional[Dict[str, Any]] = None,
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        url = f"{self.base_url}{path}"
+        body = json.dumps(payload) if payload else ""
+        headers = {"Content-Type": "application/json"}
+        if self.configured():
+            headers.update(self._signature_headers(method, path, body))
+        last_error: Optional[Exception] = None
+        for attempt in range(self.max_retries):
+            try:
+                response = requests.request(
+                    method,
+                    url,
+                    params=params,
+                    data=body if payload else None,
+                    headers=headers,
+                    timeout=15,
+                )
+                if response.status_code in {429, 500, 502, 503, 504}:
+                    raise requests.HTTPError(f"Retryable status: {response.status_code}")
+                response.raise_for_status()
+                return response.json()
+            except (requests.RequestException, ValueError) as exc:
+                last_error = exc
+                backoff = (2 ** attempt) + random.uniform(0.2, 0.8)
+                time.sleep(backoff)
+        log_event("kalshi_request_failed", {"path": path, "error": str(last_error)})
+        raise RuntimeError("Kalshi API request failed") from last_error
+
+    def list_markets(self, event_type: str, time_window_hours: int) -> List[MarketInfo]:
         if not self.configured():
-            return [market for market in DEMO_MARKETS if market.category == category]
+            return [
+                MarketInfo(
+                    market_id=market.market_id,
+                    name=market.name,
+                    category=market.category,
+                    time_to_resolution_minutes=market.time_to_resolution_minutes,
+                )
+                for market in DEMO_MARKETS
+                if market.category == event_type
+            ]
 
-        response = requests.get(
-            f"{self.base_url}/markets",
-            params={"category": category},
-            headers={"Authorization": f"Bearer {self.api_key}"},
-            timeout=10,
+        data = self._request(
+            "GET",
+            "/markets",
+            params={"category": event_type, "duration": time_window_hours},
         )
-        response.raise_for_status()
-        data = response.json().get("markets", [])
-        markets: List[DemoMarket] = []
-        for item in data:
+        markets = []
+        for item in data.get("markets", []):
             markets.append(
-                DemoMarket(
-                    market_id=item.get("ticker", item.get("id")),
+                MarketInfo(
+                    market_id=item.get("ticker", item.get("id", "")),
                     name=item.get("title", "Unknown"),
-                    category=category,
-                    base_price=item.get("last_price", 0.5),
-                    sensitivity=0.05,
-                    time_to_expiry_hours=24.0,
+                    category=event_type,
+                    time_to_resolution_minutes=float(item.get("minutes_to_expiry", 60.0)),
                 )
             )
         return markets
 
-    def get_market_snapshot(self, market: DemoMarket) -> Dict[str, float]:
+    def get_market_snapshot(self, market: MarketInfo | DemoMarket) -> Dict[str, float]:
         if not self.configured():
             timestamp = datetime.now(tz=timezone.utc)
-            mid = deterministic_mid_price(market, timestamp)
+            mid = deterministic_mid_price(market, timestamp)  # type: ignore[arg-type]
             spread = demo_spread(mid)
             return {
                 "mid": mid,
                 "bid": round(mid - spread / 2, 4),
                 "ask": round(mid + spread / 2, 4),
+                "last": mid,
                 "volume": 200.0,
-                "time_to_expiry_hours": market.time_to_expiry_hours,
+                "bid_depth": 200.0,
+                "ask_depth": 200.0,
+                "time_to_resolution_minutes": getattr(market, "time_to_resolution_minutes", 60.0),
             }
 
-        response = requests.get(
-            f"{self.base_url}/markets/{market.market_id}",
-            headers={"Authorization": f"Bearer {self.api_key}"},
-            timeout=10,
-        )
-        response.raise_for_status()
-        payload = response.json()
+        payload = self._request("GET", f"/markets/{market.market_id}")
         mid = payload.get("mid_price", payload.get("last_price", 0.5))
         bid = payload.get("yes_bid", mid - 0.01)
         ask = payload.get("yes_ask", mid + 0.01)
@@ -71,19 +126,40 @@ class KalshiClient:
             "mid": float(mid),
             "bid": float(bid),
             "ask": float(ask),
+            "last": float(payload.get("last_price", mid)),
             "volume": float(payload.get("volume", 0.0)),
-            "time_to_expiry_hours": float(payload.get("hours_to_expiry", 24.0)),
+            "bid_depth": float(payload.get("bid_depth", 0.0)),
+            "ask_depth": float(payload.get("ask_depth", 0.0)),
+            "time_to_resolution_minutes": float(payload.get("minutes_to_expiry", 60.0)),
         }
 
-    def place_order(self, market_id: str, side: str, price: float, size: int) -> Dict[str, str]:
+    def get_account(self) -> Optional[Dict[str, Any]]:
         if not self.configured():
-            return {"order_id": f"paper-{market_id}-{int(price * 10000)}", "status": "filled"}
+            return None
+        return self._request("GET", "/account")
 
-        response = requests.post(
-            f"{self.base_url}/orders",
-            json={"ticker": market_id, "side": side, "price": price, "size": size},
-            headers={"Authorization": f"Bearer {self.api_key}"},
-            timeout=10,
-        )
-        response.raise_for_status()
-        return response.json()
+    def place_order(self, market_id: str, side: str, price: float, qty: int, order_type: str) -> Dict[str, Any]:
+        payload = {
+            "ticker": market_id,
+            "side": side,
+            "type": order_type,
+            "price": price,
+            "size": qty,
+        }
+        return self._request("POST", "/orders", payload=payload)
+
+    def cancel_order(self, order_id: str) -> Dict[str, Any]:
+        return self._request("DELETE", f"/orders/{order_id}")
+
+    def get_open_orders(self) -> List[Dict[str, Any]]:
+        payload = self._request("GET", "/orders", params={"status": "open"})
+        return payload.get("orders", [])
+
+    def get_positions(self) -> List[Dict[str, Any]]:
+        payload = self._request("GET", "/positions")
+        return payload.get("positions", [])
+
+    def get_fills(self, since: Optional[int] = None) -> List[Dict[str, Any]]:
+        params = {"since": since} if since else None
+        payload = self._request("GET", "/fills", params=params)
+        return payload.get("fills", [])
