@@ -1,0 +1,363 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Kalshi Volatility Trader</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: "Inter", system-ui, sans-serif;
+        background-color: #0b0e14;
+        color: #e6edf6;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: radial-gradient(circle at top, #192036, #0b0e14 60%);
+      }
+
+      header {
+        padding: 24px 40px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 16px;
+      }
+
+      header h1 {
+        margin: 0;
+        font-size: 1.6rem;
+        letter-spacing: 0.02em;
+      }
+
+      header p {
+        margin: 6px 0 0;
+        color: #9bb0d0;
+        font-size: 0.95rem;
+      }
+
+      main {
+        display: grid;
+        grid-template-columns: 320px 1fr;
+        gap: 24px;
+        padding: 24px 40px 40px;
+      }
+
+      .card {
+        background: rgba(16, 20, 30, 0.85);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 16px;
+        padding: 20px;
+        box-shadow: 0 20px 50px rgba(0, 0, 0, 0.35);
+      }
+
+      .card h2 {
+        margin: 0 0 12px;
+        font-size: 1.1rem;
+      }
+
+      label {
+        display: block;
+        font-size: 0.85rem;
+        margin-bottom: 6px;
+        color: #afc1df;
+      }
+
+      input,
+      select,
+      textarea,
+      button {
+        width: 100%;
+        border-radius: 10px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        padding: 10px 12px;
+        background: #0f1524;
+        color: #e6edf6;
+        font-size: 0.9rem;
+      }
+
+      textarea {
+        min-height: 80px;
+        resize: vertical;
+      }
+
+      button {
+        cursor: pointer;
+        font-weight: 600;
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
+      }
+
+      button.primary {
+        background: linear-gradient(135deg, #2ad6a6, #2a7ad6);
+        border: none;
+        color: #041018;
+      }
+
+      button.secondary {
+        background: rgba(42, 122, 214, 0.15);
+        color: #b3ccff;
+      }
+
+      button:active {
+        transform: translateY(1px);
+      }
+
+      .stack {
+        display: grid;
+        gap: 12px;
+      }
+
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 6px 10px;
+        border-radius: 999px;
+        background: rgba(42, 214, 166, 0.12);
+        color: #6df2c9;
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+      }
+
+      .grid-3 {
+        display: grid;
+        gap: 16px;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+
+      .metrics {
+        display: grid;
+        gap: 8px;
+      }
+
+      .metric {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-size: 0.9rem;
+      }
+
+      .metric span {
+        color: #9bb0d0;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.9rem;
+      }
+
+      th,
+      td {
+        text-align: left;
+        padding: 10px 6px;
+      }
+
+      thead th {
+        color: #9bb0d0;
+        font-size: 0.8rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+
+      tbody tr {
+        border-top: 1px solid rgba(255, 255, 255, 0.06);
+      }
+
+      .vol-high {
+        color: #ffb563;
+        font-weight: 600;
+      }
+
+      .vol-critical {
+        color: #ff7a90;
+        font-weight: 700;
+      }
+
+      .tag {
+        padding: 4px 8px;
+        border-radius: 8px;
+        font-size: 0.75rem;
+        background: rgba(91, 114, 169, 0.2);
+      }
+
+      .split {
+        display: grid;
+        grid-template-columns: 1.2fr 0.8fr;
+        gap: 16px;
+      }
+
+      .log {
+        max-height: 240px;
+        overflow: auto;
+        display: grid;
+        gap: 8px;
+        font-size: 0.85rem;
+      }
+
+      .log-entry {
+        padding: 8px 10px;
+        border-radius: 10px;
+        background: rgba(11, 14, 20, 0.7);
+        border: 1px solid rgba(255, 255, 255, 0.06);
+      }
+
+      .warning {
+        color: #ffcc7a;
+        font-size: 0.85rem;
+      }
+
+      .status-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 6px 10px;
+        border-radius: 999px;
+        background: rgba(42, 122, 214, 0.2);
+        color: #b3ccff;
+        font-size: 0.75rem;
+      }
+
+      footer {
+        padding: 0 40px 32px;
+        color: #7e8fad;
+        font-size: 0.8rem;
+      }
+
+      @media (max-width: 980px) {
+        main {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div>
+        <h1>Kalshi Volatility Trader</h1>
+        <p>Interactive dashboard for scanning, qualifying, and pacing trades around high-volatility events.</p>
+      </div>
+      <div class="pill" id="mode-pill">PAPER MODE</div>
+    </header>
+
+    <main>
+      <section class="card stack" aria-label="bot configuration">
+        <div>
+          <h2>API &amp; Strategy Configuration</h2>
+          <p class="warning">
+            This system does not accept API keys in the browser. Configure secrets on the server and verify connection
+            status below. Targets are aspirational, not guaranteed.
+          </p>
+        </div>
+        <div class="stack">
+          <div>
+            <label>OpenAI Connection</label>
+            <div class="status-pill" id="openai-status">Unknown</div>
+          </div>
+          <div>
+            <label>Kalshi Connection</label>
+            <div class="status-pill" id="kalshi-status">Unknown</div>
+          </div>
+          <div>
+            <label for="event-type">Event focus</label>
+            <select id="event-type">
+              <option value="sports">Sports / Game Markets</option>
+              <option value="politics">Politics &amp; Elections</option>
+              <option value="finance">Finance / Macro</option>
+              <option value="company">Company / Earnings</option>
+            </select>
+          </div>
+          <div>
+            <label for="vol-threshold">High volatility threshold (%)</label>
+            <input id="vol-threshold" type="number" min="1" max="25" step="0.5" value="6" />
+          </div>
+          <div>
+            <label for="target-gains">Target gains per event</label>
+            <input id="target-gains" type="text" value="5-6 trades aiming for 3-5% each" />
+          </div>
+          <div>
+            <label for="risk-notes">Risk limits</label>
+            <textarea
+              id="risk-notes"
+              placeholder="Max exposure 8%, stop if 2 losses in a row."
+            ></textarea>
+          </div>
+        </div>
+        <div class="stack">
+          <button id="start-bot" class="primary">Start bot</button>
+          <button id="stop-bot" class="secondary" disabled>Pause</button>
+        </div>
+      </section>
+
+      <section class="stack">
+        <div class="card grid-3" aria-label="live metrics">
+          <div class="metrics">
+            <div class="metric"><strong>Status</strong><span id="bot-status">Idle</span></div>
+            <div class="metric"><strong>Scan cadence</strong><span id="scan-cadence">30s</span></div>
+            <div class="metric"><strong>High-vol markets</strong><span id="vol-count">0</span></div>
+          </div>
+          <div class="metrics">
+            <div class="metric"><strong>Open positions</strong><span id="open-positions">0</span></div>
+            <div class="metric"><strong>Event P&amp;L</strong><span id="event-pnl">0.00%</span></div>
+            <div class="metric"><strong>Trades executed</strong><span id="trade-count">0</span></div>
+          </div>
+          <div class="metrics">
+            <div class="metric"><strong>OpenAI sentiment</strong><span id="sentiment">Waiting</span></div>
+            <div class="metric"><strong>Risk mode</strong><span id="risk-mode">Conservative</span></div>
+            <div class="metric"><strong>Next action</strong><span id="next-action">Configure bot</span></div>
+          </div>
+        </div>
+
+        <div class="card split" aria-label="market scanner">
+          <div>
+            <h2>High-Volatility Market Scan</h2>
+            <table>
+              <thead>
+                <tr>
+                  <th>Market</th>
+                  <th>Type</th>
+                  <th>Price</th>
+                  <th>Volatility</th>
+                  <th>Signal</th>
+                </tr>
+              </thead>
+              <tbody id="market-table"></tbody>
+            </table>
+          </div>
+          <div>
+            <h2>Trade Plan</h2>
+            <div class="metrics">
+              <div class="metric"><strong>Target sequence</strong><span id="trade-sequence">0 / 6</span></div>
+              <div class="metric"><strong>Avg gain target</strong><span id="avg-gain">4.0%</span></div>
+              <div class="metric"><strong>Stop after</strong><span id="stop-rule">2 losses</span></div>
+            </div>
+            <div style="margin-top: 16px">
+              <h3>Active positions</h3>
+              <div id="positions" class="stack" aria-live="polite"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card" aria-label="activity log">
+          <h2>Activity Log</h2>
+          <div id="activity-log" class="log"></div>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      This dashboard is connected to a backend service that enforces risk controls, stores audit logs, and never exposes
+      secrets in the browser.
+    </footer>
+
+    <script src="app.js"></script>
+  </body>
+</html>
