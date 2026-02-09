@@ -50,7 +50,8 @@ The dashboard is served at http://localhost:8000.
 ## Paper Trading (Default)
 
 The bot runs in paper mode by default (`trading_mode=paper`) and uses deterministic pricing when Kalshi credentials are
-not configured. This is intended for safe, testable validation of the risk logic and UI.
+not configured. This is intended for safe, testable validation of the risk logic and UI, and requires no Kalshi
+credentials.
 
 ## Enabling Live Trading
 
@@ -61,6 +62,12 @@ not configured. This is intended for safe, testable validation of the risk logic
 5. In the dashboard, switch mode to LIVE and type the confirmation phrase **ENABLE LIVE TRADING**.
 
 > **Warning:** Live trading carries risk. No strategy guarantees returns. Always validate in paper mode first.
+
+## Kalshi Price Fields Update
+
+Kalshi market responses are transitioning away from cent-denominated fields (`yes_bid`, `yes_ask`, `last_price`, etc).
+Knoter now normalizes **dollar-denominated** fields first (`yes_bid_dollars`, `yes_ask_dollars`, `last_price_dollars`)
+and falls back safely when needed. All internal prices are stored as floats in the `[0, 1]` dollar range.
 
 ## API Endpoints
 

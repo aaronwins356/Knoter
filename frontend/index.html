@@ -110,6 +110,13 @@
         color: #ff9fa8;
       }
 
+      button.danger.big {
+        font-size: 1rem;
+        padding: 14px 16px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+      }
+
       button:active {
         transform: translateY(1px);
       }
@@ -338,7 +345,7 @@
             <button id="apply-mode" class="secondary">Apply mode</button>
             <button id="start-bot" class="primary">Start bot</button>
             <button id="stop-bot" class="secondary" disabled>Pause</button>
-            <button id="kill-bot" class="danger">Emergency Kill</button>
+            <button id="kill-bot" class="danger big">Kill</button>
             <button id="flatten-all" class="danger">Flatten all</button>
           </div>
           <div class="banner" id="live-warning">
@@ -497,11 +504,12 @@
                     <th data-sort="category">Type</th>
                     <th data-sort="mid_price">Mid</th>
                     <th data-sort="overall_score">Score</th>
-                    <th data-sort="volatility_pct">Vol%</th>
-                    <th data-sort="spread_pct">Spread%</th>
-                    <th data-sort="qualifies">Qualifies</th>
-                  </tr>
-                </thead>
+                  <th data-sort="volatility_pct">Vol%</th>
+                  <th data-sort="spread_pct">Spread%</th>
+                  <th data-sort="time_to_resolution_minutes">Time</th>
+                  <th data-sort="qualifies">Qualifies</th>
+                </tr>
+              </thead>
                 <tbody id="market-table"></tbody>
               </table>
               <div class="drawer" id="market-drawer">

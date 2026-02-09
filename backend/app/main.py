@@ -191,6 +191,7 @@ async def download_audit_csv() -> StreamingResponse:
             "timestamp",
             "market_id",
             "action",
+            "reason_code",
             "qualifies",
             "scores",
             "rationale",
@@ -206,6 +207,7 @@ async def download_audit_csv() -> StreamingResponse:
                 record.timestamp.isoformat(),
                 record.market_id,
                 record.action,
+                record.reason_code,
                 record.qualifies,
                 record.scores,
                 record.rationale,
@@ -334,15 +336,16 @@ async def dry_run() -> DryRunResult:
             expected_edge_cost_pct=snapshot.spread_pct + state.config.entry.fee_pct,
         )
         decisions.append(
-            DecisionRecord(
-                timestamp=scan.timestamp,
-                market_id=snapshot.market_id,
-                action=decision.action,
-                qualifies=snapshot.qualifies,
-                scores={**metrics.__dict__, "expected_edge_pct": decision.expected_edge_pct},
-                rationale=decision.rationale,
-                config_hash="dryrun",
-                order_ids=[],
+                DecisionRecord(
+                    timestamp=scan.timestamp,
+                    market_id=snapshot.market_id,
+                    action=decision.action,
+                    reason_code=decision.reason_code,
+                    qualifies=snapshot.qualifies,
+                    scores={**metrics.__dict__, "expected_edge_pct": decision.expected_edge_pct},
+                    rationale=decision.rationale,
+                    config_hash="dryrun",
+                    order_ids=[],
                 fills=[],
                 advisory=None,
             )
@@ -372,6 +375,7 @@ async def dry_run() -> DryRunResult:
                 timestamp=scan.timestamp,
                 market_id=position.market_id,
                 action=decision.action,
+                reason_code=decision.reason_code,
                 qualifies=True,
                 scores={"pnl_pct": pnl_pct},
                 rationale=decision.rationale,
@@ -425,7 +429,7 @@ async def kill_bot() -> Dict[str, str]:
     if state.task:
         state.task.cancel()
         state.task = None
-    state.next_action = "Killed"
+    state.next_action = "Killed (manual restart required)"
     await manager.broadcast({"type": "status", "data": state.status_snapshot().model_dump()})
     return {"status": "killed"}
 

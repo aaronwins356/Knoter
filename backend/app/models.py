@@ -156,6 +156,7 @@ class AuditRecord(BaseModel):
     timestamp: datetime
     market_id: str
     action: str
+    reason_code: str
     qualifies: bool
     scores: dict
     rationale: str
@@ -169,6 +170,7 @@ class DecisionRecord(BaseModel):
     timestamp: datetime
     market_id: str
     action: str
+    reason_code: str
     qualifies: bool
     scores: dict
     rationale: str

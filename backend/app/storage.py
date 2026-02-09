@@ -11,6 +11,12 @@ from .models import ActivityEntry, DecisionRecord, Order, Position, ScanSnapshot
 DB_PATH = Path(__file__).resolve().parents[1] / "data" / "audit.db"
 
 
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+    existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in existing:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
 def init_db() -> None:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(DB_PATH) as conn:
@@ -83,6 +89,7 @@ def init_db() -> None:
                 timestamp TEXT NOT NULL,
                 market_id TEXT NOT NULL,
                 action TEXT NOT NULL,
+                reason_code TEXT NOT NULL,
                 qualifies INTEGER NOT NULL,
                 scores TEXT NOT NULL,
                 rationale TEXT NOT NULL,
@@ -93,6 +100,7 @@ def init_db() -> None:
             )
             """
         )
+        _ensure_column(conn, "decisions", "reason_code", "TEXT NOT NULL DEFAULT ''")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS snapshots (
@@ -265,6 +273,7 @@ def log_decision(record: DecisionRecord) -> None:
                 timestamp,
                 market_id,
                 action,
+                reason_code,
                 qualifies,
                 scores,
                 rationale,
@@ -273,12 +282,13 @@ def log_decision(record: DecisionRecord) -> None:
                 fills,
                 advisory
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 record.timestamp.isoformat(),
                 record.market_id,
                 record.action,
+                record.reason_code,
                 1 if record.qualifies else 0,
                 json.dumps(record.scores),
                 record.rationale,
@@ -294,7 +304,7 @@ def fetch_decisions(limit: int = 200) -> List[DecisionRecord]:
     with sqlite3.connect(DB_PATH) as conn:
         rows = conn.execute(
             """
-            SELECT timestamp, market_id, action, qualifies, scores, rationale, config_hash, order_ids, fills, advisory
+            SELECT timestamp, market_id, action, reason_code, qualifies, scores, rationale, config_hash, order_ids, fills, advisory
             FROM decisions ORDER BY id DESC LIMIT ?
             """,
             (limit,),
@@ -306,13 +316,14 @@ def fetch_decisions(limit: int = 200) -> List[DecisionRecord]:
                 timestamp=datetime.fromisoformat(row[0]),
                 market_id=row[1],
                 action=row[2],
-                qualifies=bool(row[3]),
-                scores=json.loads(row[4]),
-                rationale=row[5],
-                config_hash=row[6],
-                order_ids=json.loads(row[7]),
-                fills=json.loads(row[8]),
-                advisory=json.loads(row[9]) if row[9] else None,
+                reason_code=row[3] or "",
+                qualifies=bool(row[4]),
+                scores=json.loads(row[5]),
+                rationale=row[6],
+                config_hash=row[7],
+                order_ids=json.loads(row[8]),
+                fills=json.loads(row[9]),
+                advisory=json.loads(row[10]) if row[10] else None,
             )
         )
     return records
@@ -356,7 +367,7 @@ def log_snapshot(scan: ScanSnapshot) -> None:
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute(
             "INSERT INTO snapshots (timestamp, payload) VALUES (?, ?)",
-            (scan.timestamp.isoformat(), json.dumps(scan.model_dump())),
+            (scan.timestamp.isoformat(), json.dumps(scan.model_dump(mode="json"))),
         )
 
 

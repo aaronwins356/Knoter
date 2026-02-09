@@ -15,6 +15,7 @@ class EntryDecision:
     side: Optional[str]
     price: Optional[float]
     expected_edge_pct: float
+    reason_code: str
     rationale: str
 
 
@@ -22,6 +23,7 @@ class EntryDecision:
 class ExitDecision:
     action: str
     price: Optional[float]
+    reason_code: str
     rationale: str
 
 
@@ -48,11 +50,11 @@ def decide_entry(
     expected_edge_cost_pct: float,
 ) -> EntryDecision:
     if in_cooldown:
-        return EntryDecision("SKIP", None, None, 0.0, "Cooldown active")
+        return EntryDecision("SKIP", None, None, 0.0, "SKIP_COOLDOWN", "Cooldown active")
     if not risk_allows:
-        return EntryDecision("SKIP", None, None, 0.0, risk_reason)
+        return EntryDecision("SKIP", None, None, 0.0, "SKIP_RISK", risk_reason)
     if len(prices) < config.entry.momentum_window:
-        return EntryDecision("SKIP", None, None, 0.0, "Not enough price history")
+        return EntryDecision("SKIP", None, None, 0.0, "SKIP_HISTORY", "Not enough price history")
 
     recent_prices = list(prices)[-config.entry.momentum_window :]
     avg_price = sum(recent_prices) / len(recent_prices)
@@ -60,12 +62,12 @@ def decide_entry(
     momentum_pct = ((mid_now - avg_price) / max(avg_price, 0.001)) * 100
 
     if abs(momentum_pct) <= config.entry.momentum_threshold_pct:
-        return EntryDecision("SKIP", None, None, 0.0, "Momentum below threshold")
+        return EntryDecision("SKIP", None, None, 0.0, "SKIP_MOMENTUM", "Momentum below threshold")
 
     side = "yes" if momentum_pct > 0 else "no"
     expected_edge_pct = abs(momentum_pct) - expected_edge_cost_pct
     if expected_edge_pct <= 0:
-        return EntryDecision("SKIP", None, None, expected_edge_pct, "Edge negative after costs")
+        return EntryDecision("SKIP", None, None, expected_edge_pct, "SKIP_EDGE", "Edge negative after costs")
 
     edge = mid_now * (config.entry.entry_edge_pct / 100)
     if side == "yes":
@@ -74,7 +76,8 @@ def decide_entry(
         price = max(bid, mid_now + edge)
 
     rationale = f"Momentum {momentum_pct:.2f}% with edge {expected_edge_pct:.2f}%"
-    return EntryDecision("ENTER", side, round(price, 4), expected_edge_pct, rationale)
+    reason_code = "ENTER_LONG" if side == "yes" else "ENTER_SHORT"
+    return EntryDecision("ENTER", side, round(price, 4), expected_edge_pct, reason_code, rationale)
 
 
 def decide_exit(
@@ -97,21 +100,21 @@ def decide_exit(
 
     if pnl_pct >= config.take_profit_pct:
         price = bid if side == "yes" else ask
-        return ExitDecision("TAKE_PROFIT", round(price, 4), "Target met"), new_peak, trail_stop
+        return ExitDecision("TAKE_PROFIT", round(price, 4), "EXIT_TP", "Target met"), new_peak, trail_stop
     if pnl_pct <= -config.stop_loss_pct:
         price = bid if side == "yes" else ask
-        return ExitDecision("STOP_LOSS", round(price, 4), "Stop loss hit"), new_peak, trail_stop
+        return ExitDecision("STOP_LOSS", round(price, 4), "EXIT_SL", "Stop loss hit"), new_peak, trail_stop
     if holding_time >= config.max_hold_seconds:
         price = bid if side == "yes" else ask
-        return ExitDecision("TIME_EXIT", round(price, 4), "Max hold time reached"), new_peak, trail_stop
+        return ExitDecision("TIME_EXIT", round(price, 4), "EXIT_TIME", "Max hold time reached"), new_peak, trail_stop
     if time_to_resolution_minutes <= config.close_before_resolution_minutes:
         price = bid if side == "yes" else ask
-        return ExitDecision("LATE_EXIT", round(price, 4), "Approaching resolution"), new_peak, trail_stop
+        return ExitDecision("LATE_EXIT", round(price, 4), "EXIT_LATE", "Approaching resolution"), new_peak, trail_stop
 
     if pnl_pct >= config.trail_start_pct:
         trail_stop = max(trailing_stop_pct or -100.0, new_peak - config.trail_gap_pct)
         if pnl_pct <= trail_stop:
             price = bid if side == "yes" else ask
-            return ExitDecision("TRAIL_STOP", round(price, 4), "Trailing stop hit"), new_peak, trail_stop
+            return ExitDecision("TRAIL_STOP", round(price, 4), "EXIT_TRAIL", "Trailing stop hit"), new_peak, trail_stop
 
-    return ExitDecision("HOLD", None, "Position healthy"), new_peak, trail_stop
+    return ExitDecision("HOLD", None, "HOLD", "Position healthy"), new_peak, trail_stop

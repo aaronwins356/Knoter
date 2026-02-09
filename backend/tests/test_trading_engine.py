@@ -20,6 +20,9 @@ class FakeBroker:
         self.cancelled.append(order_id)
         return {"status": "cancelled"}
 
+    def get_market_snapshot(self, ticker):
+        return {"bid": 0.49, "ask": 0.51}
+
 
 class DummyState:
     def __init__(self) -> None:
