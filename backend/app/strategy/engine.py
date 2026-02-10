@@ -41,8 +41,10 @@ def compute_pnl_pct(entry_price: float, current_price: float, side: str) -> floa
 
 def decide_entry(
     prices: Deque[float],
-    bid: float,
-    ask: float,
+    yes_bid: float,
+    yes_ask: float,
+    no_bid: float,
+    no_ask: float,
     config: BotConfig,
     risk_allows: bool,
     risk_reason: str,
@@ -69,12 +71,17 @@ def decide_entry(
     if expected_edge_pct <= 0:
         return EntryDecision("SKIP", None, None, expected_edge_pct, "SKIP_EDGE", "Edge negative after costs")
 
-    edge = mid_now * (config.entry.entry_edge_pct / 100)
+    edge_base = mid_now if side == "yes" else max(0.0, min(1.0, 1.0 - mid_now))
+    edge = edge_base * (config.entry.entry_edge_pct / 100)
     if side == "yes":
-        price = min(ask, mid_now - edge)
+        price = min(yes_ask, mid_now - edge)
     else:
-        price = max(bid, mid_now + edge)
+        mid_no = edge_base
+        if no_bid <= 0 or no_ask <= 0:
+            return EntryDecision("SKIP", None, None, 0.0, "SKIP_NO_QUOTE", "No-side quote missing")
+        price = min(no_ask, mid_no - edge)
 
+    price = max(0.01, min(price, 0.99))
     rationale = f"Momentum {momentum_pct:.2f}% with edge {expected_edge_pct:.2f}%"
     reason_code = "ENTER_LONG" if side == "yes" else "ENTER_SHORT"
     return EntryDecision("ENTER", side, round(price, 4), expected_edge_pct, reason_code, rationale)

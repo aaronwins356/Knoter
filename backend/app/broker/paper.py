@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from ..market_data import DEMO_MARKETS, MarketInfo, MarketQuote, Quote, normalize_quote_values
+from ..market_data import DEMO_MARKETS, MarketInfo, MarketQuote, Quote, build_quote_from_prices
 from ..models import Order, Position
 from ..strategy.engine import compute_pnl_pct
 
@@ -29,8 +29,10 @@ class PaperBroker:
                 ticker=market.ticker,
                 title=market.name,
                 close_ts=None,
+                settlement_ts=None,
                 status="open",
-                category=market.category,
+                yes_subtitle=None,
+                no_subtitle=None,
                 raw_payload={
                     "ticker": market.ticker,
                     "title": market.name,
@@ -49,7 +51,7 @@ class PaperBroker:
         market = next((m for m in DEMO_MARKETS if m.ticker == ticker), None)
         if not market:
             return MarketQuote(
-                quote=normalize_quote_values(None, None, None, None, reason="missing_demo_market"),
+                quote=build_quote_from_prices(ticker, None, None),
                 volume=0.0,
                 bid_depth=0.0,
                 ask_depth=0.0,
@@ -60,7 +62,7 @@ class PaperBroker:
         spread = demo_spread(mid)
         bid = round(mid - spread / 2, 4)
         ask = round(mid + spread / 2, 4)
-        quote = normalize_quote_values(bid=bid, ask=ask, mid=mid, last=mid)
+        quote = build_quote_from_prices(ticker, yes_bid=bid, yes_ask=ask)
         return MarketQuote(
             quote=quote,
             volume=200.0,
@@ -133,6 +135,7 @@ class PaperBroker:
             for fill in self.fills
         ]
 
-    def mark_position(self, position: Position, mid_price: float) -> None:
-        position.current_price = mid_price
-        position.pnl_pct = round(compute_pnl_pct(position.entry_price, mid_price, position.side), 4)
+    def mark_position(self, position: Position, mid_yes: float) -> None:
+        current = mid_yes if position.side == "yes" else max(0.0, min(1.0, 1.0 - mid_yes))
+        position.current_price = current
+        position.pnl_pct = round(compute_pnl_pct(position.entry_price, current, position.side), 4)

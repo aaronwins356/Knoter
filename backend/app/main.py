@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import csv
 import io
+from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict
@@ -96,6 +97,47 @@ async def kalshi_status() -> KalshiStatus:
         last_error_summary=status.last_error_summary,
         mode=state.config.trading_mode,
     )
+
+
+@app.get("/kalshi/markets/windowed")
+async def kalshi_markets_windowed(hours: int = 24, status: str = "active") -> Dict[str, Any]:
+    now_ts = int(datetime.now(tz=timezone.utc).timestamp())
+    try:
+        markets = state.kalshi_broker.get_markets_windowed(now_ts, hours, status=status)
+    except Exception as exc:  # noqa: BLE001
+        log_event("kalshi_market_window_error", {"error": str(exc)})
+        raise HTTPException(status_code=400, detail="Unable to fetch Kalshi markets") from exc
+    normalized = [
+        {
+            "ticker": market.ticker,
+            "title": market.title,
+            "close_ts": market.close_ts,
+            "settlement_ts": market.settlement_ts,
+            "status": market.status,
+            "yes_subtitle": market.yes_subtitle,
+            "no_subtitle": market.no_subtitle,
+        }
+        for market in markets
+    ]
+    return {"markets": normalized, "timestamp": now_ts}
+
+
+@app.get("/kalshi/markets/{ticker}/quote")
+async def kalshi_market_quote(ticker: str) -> Dict[str, Any]:
+    try:
+        snapshot = state.kalshi_broker.get_market_snapshot(ticker)
+    except Exception as exc:  # noqa: BLE001
+        log_event("kalshi_market_quote_error", {"ticker": ticker, "error": str(exc)})
+        raise HTTPException(status_code=400, detail="Unable to fetch Kalshi quote") from exc
+    return {
+        "quote": asdict(snapshot.quote),
+        "meta": {
+            "volume": snapshot.volume,
+            "bid_depth": snapshot.bid_depth,
+            "ask_depth": snapshot.ask_depth,
+            "time_to_resolution_minutes": snapshot.time_to_resolution_minutes,
+        },
+    }
 
 
 @app.get("/config", response_model=BotConfig)
@@ -244,8 +286,16 @@ async def cancel_order(order_id: str) -> Dict[str, str]:
 
 @app.post("/orders/place")
 async def place_order(payload: Dict[str, Any]) -> Dict[str, Any]:
-    if state.config.trading_mode != TradingMode.PAPER:
+    live_test = bool(payload.get("live_test"))
+    if state.config.trading_mode != TradingMode.PAPER and not live_test:
         raise HTTPException(status_code=400, detail="Manual orders only allowed in paper mode")
+    if state.config.trading_mode != TradingMode.PAPER and live_test:
+        if not state.config.live_trading_enabled:
+            raise HTTPException(status_code=400, detail="Live trading disabled on server")
+        if state.config.live_confirm != "ENABLE LIVE TRADING":
+            raise HTTPException(status_code=400, detail="Missing live trading confirmation")
+        if state.kalshi_client.environment_label() != "live":
+            raise HTTPException(status_code=400, detail="Kalshi environment is not live")
     ticker = payload.get("ticker")
     side = payload.get("side")
     action = payload.get("action", "buy")
@@ -285,7 +335,7 @@ async def close_position(position_id: str) -> Dict[str, str]:
     if not market_state or not market_state.last_snapshot:
         raise HTTPException(status_code=400, detail="No market data available")
     snapshot = market_state.last_snapshot
-    price = snapshot.bid if position.side == "yes" else snapshot.ask
+    price = snapshot.yes_bid if position.side == "yes" else snapshot.no_ask
     try:
         response = state.broker.place_order(
             position.market_id,
@@ -338,8 +388,8 @@ async def flatten_all() -> Dict[str, Any]:
             result = await order_manager.close_with_limit(
                 position.market_id,
                 position.side,
-                snapshot.bid,
-                snapshot.ask,
+                snapshot.yes_bid if position.side == "yes" else snapshot.no_bid,
+                snapshot.yes_ask if position.side == "yes" else snapshot.no_ask,
                 position.qty,
             )
             position.status = "closed"
@@ -362,7 +412,7 @@ async def dry_run() -> DryRunResult:
         market_state = state.market_state.get(snapshot.market_id)
         metrics = MarketMetrics(
             volatility_pct=snapshot.volatility_pct,
-            spread_pct=snapshot.spread_pct,
+            spread_pct=snapshot.spread_yes_pct,
             liquidity_score=snapshot.liquidity_score,
             overall_score=snapshot.overall_score,
             qualifies=snapshot.qualifies,
@@ -372,13 +422,15 @@ async def dry_run() -> DryRunResult:
         in_cooldown = bool(market_state and market_state.cooldown_until and market_state.cooldown_until > scan.timestamp)
         decision = decide_entry(
             prices=market_state.prices if market_state else [],
-            bid=snapshot.bid,
-            ask=snapshot.ask,
+            yes_bid=snapshot.yes_bid,
+            yes_ask=snapshot.yes_ask,
+            no_bid=snapshot.no_bid,
+            no_ask=snapshot.no_ask,
             config=state.config,
             risk_allows=risk_allows,
             risk_reason=risk_reason,
             in_cooldown=in_cooldown,
-            expected_edge_cost_pct=snapshot.spread_pct + state.config.entry.fee_pct,
+            expected_edge_cost_pct=snapshot.spread_yes_pct + state.config.entry.fee_pct,
         )
         decisions.append(
             DecisionRecord(
@@ -403,7 +455,7 @@ async def dry_run() -> DryRunResult:
         now = scan.timestamp
         decision, _, _ = decide_exit(
             position.entry_price,
-            snapshot.mid_price,
+            snapshot.mid_yes if position.side == "yes" else max(0.0, min(1.0, 1.0 - snapshot.mid_yes)),
             position.side,
             position.opened_at,
             now,
@@ -411,10 +463,14 @@ async def dry_run() -> DryRunResult:
             position.peak_pnl_pct,
             position.trail_stop_pct,
             snapshot.time_to_resolution_minutes,
-            snapshot.bid,
-            snapshot.ask,
+            snapshot.yes_bid if position.side == "yes" else snapshot.no_bid,
+            snapshot.yes_ask if position.side == "yes" else snapshot.no_ask,
         )
-        pnl_pct = compute_pnl_pct(position.entry_price, snapshot.mid_price, position.side)
+        pnl_pct = compute_pnl_pct(
+            position.entry_price,
+            snapshot.mid_yes if position.side == "yes" else max(0.0, min(1.0, 1.0 - snapshot.mid_yes)),
+            position.side,
+        )
         decisions.append(
             DecisionRecord(
                 timestamp=scan.timestamp,

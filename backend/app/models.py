@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field, PositiveInt
 
@@ -15,6 +15,14 @@ class TradingMode(str, Enum):
 class MarketFilters(BaseModel):
     event_type: str = "sports"
     time_window_hours: PositiveInt = 24
+    keywords: Dict[str, List[str]] = Field(
+        default_factory=lambda: {
+            "sports": ["nba", "nfl", "mlb", "nhl", "soccer", "game", "match", "playoff", "championship"],
+            "politics": ["election", "vote", "senate", "house", "president", "ballot", "poll"],
+            "finance": ["fed", "rate", "inflation", "cpi", "gdp", "jobs", "treasury", "oil", "macro"],
+            "company": ["earnings", "revenue", "guidance", "ipo", "stock", "ceo"],
+        }
+    )
 
 
 class ScoringWeights(BaseModel):
@@ -97,16 +105,17 @@ class BotConfig(BaseModel):
 class MarketSnapshot(BaseModel):
     market_id: str
     name: str
-    category: str
-    mid_price: float
-    bid: float
-    ask: float
-    last_price: float
+    focus: str
+    mid_yes: float
+    yes_bid: float
+    yes_ask: float
+    no_bid: float
+    no_ask: float
     volume: float
     bid_depth: float
     ask_depth: float
     volatility_pct: float
-    spread_pct: float
+    spread_yes_pct: float
     liquidity_score: float
     overall_score: float
     qualifies: bool

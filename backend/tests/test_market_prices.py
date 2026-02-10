@@ -11,9 +11,9 @@ def test_normalize_prices_prefers_dollars_fields():
     }
     quote = normalize_quote(payload)
     meta = normalize_market_meta(payload, now_ts=1_699_999_000)
-    assert quote.bid == 0.41
-    assert quote.ask == 0.45
-    assert quote.last == 0.44
+    assert quote.yes_bid == 0.41
+    assert quote.yes_ask == 0.45
+    assert quote.mid_yes == 0.43
     assert meta["minutes_to_resolution"] > 0
 
 
@@ -26,6 +26,6 @@ def test_normalize_prices_falls_back_to_cent_fields():
     }
     quote = normalize_quote(payload)
     meta = normalize_market_meta(payload)
-    assert quote.bid == 0.2
-    assert quote.ask == 0.22
+    assert quote.yes_bid == 0.2
+    assert quote.yes_ask == 0.22
     assert meta["minutes_to_resolution"] == 90

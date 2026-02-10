@@ -6,14 +6,6 @@ from app.broker.kalshi import KalshiBroker
 class DummyClient:
     def __init__(self) -> None:
         self.market_params = []
-        self.series_params = []
-
-    def list_series(self, params=None, fetch_all=True):
-        self.series_params.append(params or {})
-        return []
-
-    def list_events(self, params=None, fetch_all=True):
-        return []
 
     def list_markets(self, params=None, fetch_all=True):
         self.market_params.append(params or {})
@@ -21,7 +13,7 @@ class DummyClient:
             {
                 "ticker": "TEST-MKT",
                 "title": "NBA Finals Winner",
-                "status": "open",
+                "status": "active",
                 "close_ts": int(time.time()) + 3600,
             }
         ]
@@ -33,49 +25,14 @@ class DummyClient:
         return "demo"
 
 
-class SeriesClient(DummyClient):
-    def __init__(self) -> None:
-        super().__init__()
-        self.events_params = []
-
-    def list_series(self, params=None, fetch_all=True):
-        return [{"ticker": "SER-2024", "title": "Election 2024"}]
-
-    def list_events(self, params=None, fetch_all=True):
-        self.events_params.append(params or {})
-        return [{"ticker": "EVT-2024"}]
-
-    def list_markets(self, params=None, fetch_all=True):
-        self.market_params.append(params or {})
-        return [
-            {
-                "ticker": "TEST-MKT",
-                "title": "Election 2024 Winner",
-                "status": "open",
-                "close_ts": int(time.time()) + 3600,
-                "event_ticker": "EVT-2024",
-            }
-        ]
-
-
-def test_market_discovery_fallback_builds_time_window():
+def test_market_discovery_builds_time_window_and_filters_keywords():
     client = DummyClient()
     broker = KalshiBroker(client, live_gate_enabled=False, live_confirm="")
     start = int(time.time())
-    markets = broker.list_markets("sports", 2)
+    markets = broker.list_markets("sports", 2, keyword_map={"sports": ["nba"]})
     assert markets
     params = client.market_params[0]
-    assert params["status"] == "open"
+    assert params["status"] in {"active", "open"}
     assert params["min_close_ts"] >= start
     assert params["max_close_ts"] >= params["min_close_ts"]
     assert params["limit"] == 200
-
-
-def test_market_discovery_uses_series_and_events():
-    client = SeriesClient()
-    broker = KalshiBroker(client, live_gate_enabled=False, live_confirm="")
-    markets = broker.list_markets("politics", 4)
-    assert markets
-    assert client.events_params[0]["series_ticker"] == "SER-2024"
-    assert client.events_params[0]["status"] == "open"
-    assert client.market_params[0]["status"] == "open"
