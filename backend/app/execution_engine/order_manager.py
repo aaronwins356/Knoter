@@ -72,10 +72,12 @@ class OrderManager:
         for attempt in range(self.config.entry.max_replacements + 1):
             quote = self._refresh_quote(ticker)
             if quote and quote.valid:
-                if action == "buy":
-                    price = min(price, quote.ask)
-                else:
-                    price = max(price, quote.bid)
+                best_ask = quote.yes_ask if side == "yes" else quote.no_ask
+                best_bid = quote.yes_bid if side == "yes" else quote.no_bid
+                if action == "buy" and best_ask is not None:
+                    price = min(price, best_ask)
+                elif action == "sell" and best_bid is not None:
+                    price = max(price, best_bid)
             now = datetime.now(tz=timezone.utc)
             response = self.broker.place_order(
                 ticker,
@@ -112,7 +114,8 @@ class OrderManager:
 
             if attempt < self.config.entry.max_replacements and self.config.entry.order_ttl_seconds > 0:
                 await asyncio.sleep(self.config.entry.order_ttl_seconds)
-            self.broker.cancel_order(order_id)
+            if status not in {"filled", "cancelled"}:
+                self.broker.cancel_order(order_id)
         return OrderResult(order_id, status, filled_qty, avg_fill_price)
 
     def reconcile_broker(self, since_ms: Optional[int] = None) -> dict:
@@ -138,9 +141,10 @@ class OrderManager:
         for attempt in range(max_steps + 1):
             quote = self._refresh_quote(ticker)
             if quote and quote.valid:
-                base_price = quote.bid if side == "yes" else quote.ask
-                step = base_price * (step_pct / 100) * attempt
-                current_price = base_price - step if side == "yes" else base_price + step
+                base_price = quote.yes_bid if side == "yes" else quote.no_ask
+                if base_price is not None:
+                    step = base_price * (step_pct / 100) * attempt
+                    current_price = base_price - step if side == "yes" else base_price + step
             response = self.broker.place_order(ticker, action, side, current_price, remaining_qty)
             order_id = response.get("order_id", "")
             status = response.get("status", "open")

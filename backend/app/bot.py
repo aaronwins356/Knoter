@@ -18,7 +18,7 @@ def build_advisor_prompt(snapshot: MarketSnapshot, action: str, rationale: str, 
         f"Market: {snapshot.name} ({snapshot.market_id})\n"
         f"Action: {action}\n"
         f"Rationale: {rationale}\n"
-        f"Scores: volatility={snapshot.volatility_pct:.2f}%, spread={snapshot.spread_pct:.2f}%, "
+        f"Scores: volatility={snapshot.volatility_pct:.2f}%, spread={snapshot.spread_yes_pct:.2f}%, "
         f"liquidity={snapshot.liquidity_score:.1f}, overall={snapshot.overall_score:.1f}\n"
         f"Risk state: {risk_state}\n"
         "Return JSON with sentiment (-1..1), confidence (0..1), notes, and veto (true/false)."
@@ -42,7 +42,7 @@ def record_decision(
         qualifies=snapshot.qualifies,
         scores={
             "volatility_pct": snapshot.volatility_pct,
-            "spread_pct": snapshot.spread_pct,
+            "spread_pct": snapshot.spread_yes_pct,
             "liquidity_score": snapshot.liquidity_score,
             "overall_score": snapshot.overall_score,
             "time_to_close_minutes": snapshot.time_to_resolution_minutes,
@@ -77,7 +77,7 @@ def _cooldown_active(market_state: Optional[MarketState]) -> bool:
 
 
 def _expected_edge_cost_pct(snapshot: MarketSnapshot, config) -> float:
-    return snapshot.spread_pct + config.entry.fee_pct
+    return snapshot.spread_yes_pct + config.entry.fee_pct
 
 
 async def maybe_open_trade(state) -> None:
@@ -110,8 +110,10 @@ async def maybe_open_trade(state) -> None:
         market_state = state.market_state.get(snapshot.market_id)
         decision = decide_entry(
             prices=market_state.prices if market_state else [],
-            bid=snapshot.bid,
-            ask=snapshot.ask,
+            yes_bid=snapshot.yes_bid,
+            yes_ask=snapshot.yes_ask,
+            no_bid=snapshot.no_bid,
+            no_ask=snapshot.no_ask,
             config=state.config,
             risk_allows=risk_allows,
             risk_reason=risk_reason,
@@ -197,7 +199,9 @@ async def update_positions(state) -> None:
         if not market_state or not market_state.last_snapshot:
             continue
         snapshot = market_state.last_snapshot
-        current = snapshot.mid_price
+        current = snapshot.mid_yes if position.side == "yes" else max(0.0, min(1.0, 1.0 - snapshot.mid_yes))
+        bid = snapshot.yes_bid if position.side == "yes" else snapshot.no_bid
+        ask = snapshot.yes_ask if position.side == "yes" else snapshot.no_ask
         decision, new_peak, trail_stop = decide_exit(
             position.entry_price,
             current,
@@ -208,8 +212,8 @@ async def update_positions(state) -> None:
             position.peak_pnl_pct,
             position.trail_stop_pct,
             snapshot.time_to_resolution_minutes,
-            snapshot.bid,
-            snapshot.ask,
+            bid,
+            ask,
         )
         position.current_price = current
         position.pnl_pct = round(compute_pnl_pct(position.entry_price, current, position.side), 4)
@@ -220,8 +224,8 @@ async def update_positions(state) -> None:
             result = await order_manager.close_with_limit(
                 position.market_id,
                 position.side,
-                snapshot.bid,
-                snapshot.ask,
+                bid,
+                ask,
                 position.qty,
             )
             position.status = "closed"
@@ -386,9 +390,14 @@ async def run_bot(state, publish) -> None:
         await maybe_open_trade(state)
         reconcile_broker_state(state)
 
-        await publish("scan", state.last_scan.model_dump() if state.last_scan else {})
-        await publish("positions", {"positions": [pos.model_dump() for pos in state.positions.values()]})
-        await publish("status", state.status_snapshot().model_dump())
-        await publish("activity", {"entries": [entry.model_dump() for entry in state.activity_entries()]})
+        await publish(
+            "batch",
+            {
+                "scan": state.last_scan.model_dump() if state.last_scan else {},
+                "positions": {"positions": [pos.model_dump() for pos in state.positions.values()]},
+                "status": state.status_snapshot().model_dump(),
+                "activity": {"entries": [entry.model_dump() for entry in state.activity_entries()]},
+            },
+        )
 
         await asyncio.sleep(state.config.cadence_seconds)

@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, timezone
 import asyncio
 
 from app.execution_engine.order_manager import OrderManager
-from app.market_data import MarketQuote, Quote
+from app.market_data import MarketQuote, build_quote_from_prices
 from app.models import BotConfig
 from app.storage import init_db
 from app.strategy.engine import decide_entry, decide_exit
@@ -24,7 +24,7 @@ class FakeBroker:
 
     def get_market_snapshot(self, ticker):
         return MarketQuote(
-            quote=Quote(bid=0.49, ask=0.51, mid=0.5, last=0.5, spread_pct=4.0, valid=True),
+            quote=build_quote_from_prices(ticker, yes_bid=0.49, yes_ask=0.51),
             volume=100.0,
             bid_depth=50.0,
             ask_depth=50.0,
@@ -45,8 +45,10 @@ def test_entry_decision_requires_momentum():
     config = BotConfig()
     decision = decide_entry(
         prices=[0.5, 0.5, 0.5, 0.5, 0.5, 0.5],
-        bid=0.49,
-        ask=0.51,
+        yes_bid=0.49,
+        yes_ask=0.51,
+        no_bid=0.49,
+        no_ask=0.51,
         config=config,
         risk_allows=True,
         risk_reason="Ok",

@@ -29,16 +29,17 @@ def test_smoke_cycle_paper_broker():
     snapshot = MarketSnapshot(
         market_id=market_id,
         name="Demo Market",
-        category="sports",
-        mid_price=0.52,
-        bid=0.51,
-        ask=0.53,
-        last_price=0.52,
+        focus="sports",
+        mid_yes=0.52,
+        yes_bid=0.51,
+        yes_ask=0.53,
+        no_bid=0.47,
+        no_ask=0.49,
         volume=500.0,
         bid_depth=300.0,
         ask_depth=300.0,
         volatility_pct=2.0,
-        spread_pct=0.1,
+        spread_yes_pct=0.1,
         liquidity_score=80.0,
         overall_score=75.0,
         qualifies=True,
@@ -52,7 +53,9 @@ def test_smoke_cycle_paper_broker():
     assert len(state.positions) == 1
 
     position = next(iter(state.positions.values()))
-    market_state.last_snapshot = snapshot.model_copy(update={"mid_price": 0.54, "bid": 0.54, "ask": 0.55})
+    market_state.last_snapshot = snapshot.model_copy(
+        update={"mid_yes": 0.54, "yes_bid": 0.54, "yes_ask": 0.55, "no_bid": 0.45, "no_ask": 0.46}
+    )
     asyncio.run(update_positions(state))
     assert position.status == "closed"
     assert position.closed_at is not None
@@ -66,10 +69,10 @@ def test_smoke_paper_trade_flow():
     ticker = markets[0].ticker
     snapshot = broker.get_market_snapshot(ticker)
     quote = snapshot.quote
-    assert 0.0 <= quote.bid <= quote.ask <= 1.0
-    assert 0.0 <= quote.mid <= 1.0
+    assert 0.0 <= quote.yes_bid <= quote.yes_ask <= 1.0
+    assert 0.0 <= quote.mid_yes <= 1.0
 
-    order = broker.place_order(ticker, "buy", "yes", quote.ask, 1)
+    order = broker.place_order(ticker, "buy", "yes", quote.yes_ask or 0.5, 1)
     order_id = order["order_id"]
     assert order_id
 

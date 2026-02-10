@@ -141,11 +141,11 @@ const renderMarkets = () => {
       (market) => `
         <tr data-market="${market.market_id}">
           <td>${market.name}</td>
-          <td><span class="tag">${market.category}</span></td>
-          <td>${formatPercent(market.mid_price)}</td>
+          <td><span class="tag">${market.focus}</span></td>
+          <td>${formatPercent(market.mid_yes)}</td>
           <td>${market.overall_score.toFixed(1)}</td>
           <td>${market.volatility_pct.toFixed(2)}%</td>
-          <td>${market.spread_pct.toFixed(2)}%</td>
+          <td>${market.spread_yes_pct.toFixed(2)}%</td>
           <td>${market.time_to_resolution_minutes.toFixed(0)}m</td>
           <td>${market.qualifies ? "Yes" : "No"}</td>
         </tr>
@@ -318,11 +318,11 @@ const loadMarketDetail = async (marketId) => {
   drawSparkline(data.recent_prices);
   elements.drawerMetrics.innerHTML = `
     <div class="metric"><span>Volatility</span><span>${data.snapshot.volatility_pct.toFixed(2)}%</span></div>
-    <div class="metric"><span>Spread</span><span>${data.snapshot.spread_pct.toFixed(2)}%</span></div>
+    <div class="metric"><span>Spread</span><span>${data.snapshot.spread_yes_pct.toFixed(2)}%</span></div>
     <div class="metric"><span>Liquidity</span><span>${data.snapshot.liquidity_score.toFixed(1)}</span></div>
     <div class="metric"><span>Score</span><span>${data.snapshot.overall_score.toFixed(1)}</span></div>
     <div class="metric"><span>Resolution</span><span>${data.snapshot.time_to_resolution_minutes.toFixed(0)}m</span></div>
-    <div class="metric"><span>Mid</span><span>${formatPercent(data.snapshot.mid_price)}</span></div>
+    <div class="metric"><span>Mid (Yes)</span><span>${formatPercent(data.snapshot.mid_yes)}</span></div>
   `;
   if (data.audit.length === 0) {
     elements.drawerAudit.innerHTML = '<p class="warning">No audit records yet.</p>';
@@ -507,6 +507,34 @@ const connectWebSocket = () => {
 
   socket.addEventListener("message", (event) => {
     const message = JSON.parse(event.data);
+    if (message.type === "batch") {
+      if (message.data?.status) {
+        state.status = message.data.status.status;
+        state.trades = message.data.status.trades_executed;
+        state.pnl = message.data.status.event_pnl_pct;
+        state.openPositions = message.data.status.open_positions;
+        state.highVolCount = message.data.status.high_vol_count;
+        state.nextAction = message.data.status.next_action;
+        state.riskMode = message.data.status.risk_mode;
+        state.tradingMode = message.data.status.trading_mode;
+        state.liveEnabled = message.data.status.live_trading_enabled;
+      }
+      if (message.data?.scan) {
+        state.markets = message.data.scan.markets || [];
+      }
+      if (message.data?.positions) {
+        state.positions = message.data.positions.positions || [];
+      }
+      if (message.data?.activity) {
+        state.activity = message.data.activity.entries || [];
+      }
+      updateModeUI();
+      updateMetrics();
+      renderMarkets();
+      renderPositions();
+      updateLog(state.audit && state.audit.length ? state.audit : state.activity);
+      return;
+    }
     if (message.type === "status") {
       state.status = message.data.status;
       state.trades = message.data.trades_executed;

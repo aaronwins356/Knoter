@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import os
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional
 
 from ..kalshi_client import KalshiClient
 from ..logging_utils import log_event
@@ -35,7 +35,7 @@ class KalshiBroker:
             raise RuntimeError("Live trading is not enabled")
 
     @staticmethod
-    def build_market_query(now_ts: int, time_window_hours: int, status: str = "open") -> Dict[str, Any]:
+    def build_market_query(now_ts: int, time_window_hours: int, status: str = "active") -> Dict[str, Any]:
         return {
             "status": status,
             "min_close_ts": now_ts,
@@ -43,52 +43,57 @@ class KalshiBroker:
             "limit": 200,
         }
 
-    def get_markets_windowed(self, now_ts: int, time_window_hours: int, status: str = "open") -> List[MarketInfo]:
-        params = self.build_market_query(now_ts, time_window_hours, status=status)
-        markets = self.client.list_markets(params=params, fetch_all=True)
+    def get_markets_windowed(self, now_ts: int, time_window_hours: int, status: str = "active") -> List[MarketInfo]:
+        statuses = [status]
+        if status == "active":
+            statuses.append("open")
         normalized: List[MarketInfo] = []
-        for item in markets:
-            ticker = item.get("ticker") or item.get("market_ticker") or ""
-            if not ticker:
-                continue
-            meta = normalize_market_meta(item, now_ts=now_ts)
-            normalized.append(
-                MarketInfo(
-                    ticker=ticker,
-                    title=item.get("title") or item.get("name") or "Unknown",
-                    close_ts=meta["close_ts"],
-                    status=(item.get("status") or status).lower(),
-                    category="",
-                    raw_payload=item,
+        seen: set[str] = set()
+        for status_value in statuses:
+            params = self.build_market_query(now_ts, time_window_hours, status=status_value)
+            markets = self.client.list_markets(params=params, fetch_all=True)
+            for item in markets:
+                ticker = item.get("ticker") or item.get("market_ticker") or ""
+                if not ticker:
+                    continue
+                if ticker in seen:
+                    continue
+                seen.add(ticker)
+                meta = normalize_market_meta(item, now_ts=now_ts)
+                normalized.append(
+                    MarketInfo(
+                        ticker=ticker,
+                        title=item.get("title") or item.get("name") or "Unknown",
+                        close_ts=meta["close_ts"],
+                        settlement_ts=meta["settlement_ts"],
+                        status=(item.get("status") or status_value).lower(),
+                        yes_subtitle=item.get("yes_subtitle") or item.get("yes_title"),
+                        no_subtitle=item.get("no_subtitle") or item.get("no_title"),
+                        raw_payload=item,
+                    )
                 )
-            )
         return normalized
 
-    def list_markets(self, event_type: str, time_window_hours: int) -> List[MarketInfo]:
+    def list_markets(
+        self, event_type: str, time_window_hours: int, keyword_map: Optional[Dict[str, List[str]]] = None
+    ) -> List[MarketInfo]:
         now_ts = int(datetime.now(tz=timezone.utc).timestamp())
-        keywords = self._keywords_for_event_type(event_type)
-        series_tickers, event_tickers = self._resolve_focus_tickers(keywords)
+        keywords = self._keywords_for_event_type(event_type, keyword_map)
 
         collected: Dict[str, MarketInfo] = {}
-        windowed = self.get_markets_windowed(now_ts, time_window_hours, status="open")
+        windowed = self.get_markets_windowed(now_ts, time_window_hours, status="active")
         for market in windowed:
             payload = market.raw_payload
-            series_ticker = payload.get("series_ticker")
-            event_ticker = payload.get("event_ticker")
-            if event_tickers and event_ticker:
-                if event_ticker not in event_tickers:
-                    continue
-            elif series_tickers and series_ticker:
-                if series_ticker not in series_tickers:
-                    continue
-            elif not self._market_matches(payload, keywords):
+            if not self._market_matches(payload, keywords):
                 continue
             market = MarketInfo(
                 ticker=market.ticker,
                 title=market.title,
                 close_ts=market.close_ts,
-                status=(payload.get("status") or "open").lower(),
-                category=event_type,
+                settlement_ts=market.settlement_ts,
+                status=(payload.get("status") or "active").lower(),
+                yes_subtitle=market.yes_subtitle,
+                no_subtitle=market.no_subtitle,
                 raw_payload=payload,
             )
             collected.setdefault(market.ticker, market)
@@ -182,8 +187,10 @@ class KalshiBroker:
             )
 
     @staticmethod
-    def _keywords_for_event_type(event_type: str) -> List[str]:
-        mapping = {
+    def _keywords_for_event_type(
+        event_type: str, keyword_map: Optional[Dict[str, List[str]]] = None
+    ) -> List[str]:
+        mapping = keyword_map or {
             "sports": ["nba", "nfl", "mlb", "nhl", "soccer", "game", "match", "playoff", "championship"],
             "politics": ["election", "vote", "senate", "house", "president", "ballot", "poll"],
             "finance": ["fed", "rate", "inflation", "cpi", "gdp", "jobs", "treasury", "oil", "macro"],
@@ -191,45 +198,12 @@ class KalshiBroker:
         }
         return mapping.get(event_type, [event_type])
 
-    def _resolve_focus_tickers(self, keywords: Iterable[str]) -> Tuple[set[str], set[str]]:
-        series_tickers: set[str] = set()
-        event_tickers: set[str] = set()
-        try:
-            series = self.client.list_series(params={"limit": 200}, fetch_all=True)
-        except Exception as exc:  # noqa: BLE001
-            log_event("series_lookup_failed", {"error": str(exc)})
-            return series_tickers, event_tickers
-        for item in series:
-            if self._series_matches(item, keywords):
-                ticker = item.get("ticker")
-                if ticker:
-                    series_tickers.add(ticker)
-        for series_ticker in series_tickers:
-            try:
-                events = self.client.list_events(
-                    params={"status": "open", "series_ticker": series_ticker, "limit": 200},
-                    fetch_all=True,
-                )
-            except Exception as exc:  # noqa: BLE001
-                log_event("event_lookup_failed", {"series_ticker": series_ticker, "error": str(exc)})
-                continue
-            for event in events:
-                event_ticker = event.get("ticker") or event.get("event_ticker")
-                if event_ticker:
-                    event_tickers.add(event_ticker)
-        return series_tickers, event_tickers
-
-    @staticmethod
-    def _series_matches(series: Dict[str, Any], keywords: Iterable[str]) -> bool:
-        title = (series.get("title") or series.get("name") or "").lower()
-        tags = " ".join(series.get("tags", []) if isinstance(series.get("tags"), list) else [])
-        haystack = f"{title} {tags}".lower()
-        return any(keyword in haystack for keyword in keywords)
-
     @staticmethod
     def _market_matches(market: Dict[str, Any], keywords: Iterable[str]) -> bool:
         title = (market.get("title") or market.get("name") or "").lower()
         event_title = (market.get("event_title") or "").lower()
         series_title = (market.get("series_title") or market.get("series_name") or "").lower()
-        haystack = f"{title} {event_title} {series_title}".lower()
+        yes_subtitle = (market.get("yes_subtitle") or market.get("yes_title") or "").lower()
+        no_subtitle = (market.get("no_subtitle") or market.get("no_title") or "").lower()
+        haystack = f"{title} {event_title} {series_title} {yes_subtitle} {no_subtitle}".lower()
         return any(keyword in haystack for keyword in keywords)

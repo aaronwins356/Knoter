@@ -34,7 +34,8 @@ class KalshiClient:
     def __init__(self) -> None:
         environment = _resolve_environment()
         self.environment = environment
-        self.base_url = f"{environment.api_root}{API_PREFIX}"
+        api_root = os.getenv("KALSHI_BASE_URL") or environment.api_root
+        self.base_url = f"{api_root.rstrip('/')}{API_PREFIX}"
         self.api_key = os.getenv("KALSHI_API_KEY_ID") or os.getenv("KALSHI_API_KEY")
         self.private_key = self._load_private_key()
         self.max_retries = int(os.getenv("KALSHI_MAX_RETRIES", "3"))
@@ -121,7 +122,7 @@ class KalshiClient:
                 response.raise_for_status()
                 return response.json()
             except (requests.RequestException, ValueError) as exc:
-                self.last_error = str(exc)
+                self.last_error = self._summarize_error(exc)
                 if attempt >= self.max_retries - 1:
                     snippet = ""
                     status_code = None
@@ -143,6 +144,20 @@ class KalshiClient:
                     raise RuntimeError("Kalshi API request failed") from exc
                 time.sleep(1 + attempt)
         raise RuntimeError("Kalshi API request failed")
+
+    @staticmethod
+    def _summarize_error(exc: Exception) -> str:
+        if isinstance(exc, requests.HTTPError) and exc.response is not None:
+            status = exc.response.status_code
+            if status in {401, 403}:
+                return "Authentication failed (check signature string, timestamp ms, key ID, and base URL)."
+            if status == 404:
+                return "Endpoint not found (check KALSHI_BASE_URL and /trade-api/v2 prefix)."
+            if status == 400:
+                return "Bad request (verify signing path without query params and payload fields)."
+            if status >= 500:
+                return "Kalshi API unavailable (server error)."
+        return str(exc)
 
     def get_portfolio_balance(self) -> Dict[str, Any]:
         return self._request("GET", "/portfolio/balance")
@@ -263,8 +278,8 @@ class KalshiClient:
             price_float = float(price_value)
         except (TypeError, ValueError) as exc:
             raise ValueError("Order payload price must be a decimal string") from exc
-        if not (0.0 <= price_float <= 1.0):
-            raise ValueError("Order payload price must be between 0 and 1 dollars")
+        if not (0.01 <= price_float <= 0.99):
+            raise ValueError("Order payload price must be between 0.01 and 0.99 dollars")
         log_event(
             "kalshi_order_request",
             {

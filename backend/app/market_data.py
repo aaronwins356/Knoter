@@ -5,26 +5,33 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, List, Optional, Tuple
 
+from .logging_utils import log_event
+
 
 @dataclass(frozen=True)
 class MarketInfo:
     ticker: str
     title: str
     close_ts: Optional[int]
+    settlement_ts: Optional[int]
     status: str
-    category: str
+    yes_subtitle: Optional[str]
+    no_subtitle: Optional[str]
     raw_payload: dict
 
 
 @dataclass(frozen=True)
 class Quote:
-    bid: float
-    ask: float
-    mid: float
-    last: float
-    spread_pct: float
+    ticker: str
+    yes_bid: Optional[float]
+    yes_ask: Optional[float]
+    no_bid: Optional[float]
+    no_ask: Optional[float]
+    mid_yes: Optional[float]
+    spread_yes_pct: Optional[float]
+    ts_ms: Optional[int]
     valid: bool
-    reason: Optional[str] = None
+    reason_if_invalid: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -120,14 +127,14 @@ def _first_present(payload: dict, keys: List[str]) -> Optional[float]:
     return None
 
 
-def _extract_price(payload: dict, dollars_keys: List[str], cents_keys: List[str]) -> Optional[float]:
+def _extract_price(payload: dict, dollars_keys: List[str], cents_keys: List[str]) -> Tuple[Optional[float], bool]:
     dollars = _first_present(payload, dollars_keys)
     if dollars is not None:
-        return float(dollars)
+        return float(dollars), False
     cents = _first_present(payload, cents_keys)
     if cents is None:
-        return None
-    return float(cents) / 100.0
+        return None, False
+    return float(cents) / 100.0, True
 
 
 def _normalize_timestamp(ts: Optional[float]) -> Optional[int]:
@@ -139,103 +146,147 @@ def _normalize_timestamp(ts: Optional[float]) -> Optional[int]:
     return int(value)
 
 
-def _clamp_unit_price(value: float) -> Tuple[float, bool]:
-    if value < 0.0:
-        return 0.0, True
-    if value > 1.0:
-        return 1.0, True
-    return float(value), False
-
-
-def normalize_quote_values(
-    bid: Optional[float],
-    ask: Optional[float],
-    mid: Optional[float],
-    last: Optional[float],
+def _normalize_quote_values(
+    ticker: str,
+    yes_bid: Optional[float],
+    yes_ask: Optional[float],
+    no_bid: Optional[float],
+    no_ask: Optional[float],
+    mid_yes: Optional[float],
+    ts_ms: Optional[int],
     reason: Optional[str] = None,
 ) -> Quote:
-    if bid is None and ask is None and mid is None and last is None:
-        return Quote(bid=0.0, ask=0.0, mid=0.0, last=0.0, spread_pct=0.0, valid=False, reason=reason or "missing_quote")
-
-    if bid is not None and ask is not None:
-        mid = (bid + ask) / 2
-    if mid is None:
-        mid = last
-    if bid is None and mid is not None:
-        bid = mid
-    if ask is None and mid is not None:
-        ask = mid
-    if last is None and mid is not None:
-        last = mid
-
-    if bid is None or ask is None or mid is None or last is None:
-        return Quote(bid=0.0, ask=0.0, mid=0.0, last=0.0, spread_pct=0.0, valid=False, reason=reason or "missing_quote")
-
     invalid_reasons: List[str] = []
-    bid, bid_clamped = _clamp_unit_price(float(bid))
-    ask, ask_clamped = _clamp_unit_price(float(ask))
-    mid, mid_clamped = _clamp_unit_price(float(mid))
-    last, last_clamped = _clamp_unit_price(float(last))
 
-    if bid_clamped or ask_clamped or mid_clamped or last_clamped:
+    def _clamp(value: Optional[float]) -> Tuple[Optional[float], bool]:
+        if value is None:
+            return None, False
+        if value < 0.0 or value > 1.0:
+            return max(0.0, min(1.0, float(value))), True
+        return float(value), False
+
+    yes_bid, yes_bid_clamped = _clamp(yes_bid)
+    yes_ask, yes_ask_clamped = _clamp(yes_ask)
+    no_bid, no_bid_clamped = _clamp(no_bid)
+    no_ask, no_ask_clamped = _clamp(no_ask)
+    mid_yes, mid_yes_clamped = _clamp(mid_yes)
+
+    if yes_bid is None or yes_ask is None:
+        invalid_reasons.append("missing_bid_ask")
+    if yes_bid_clamped or yes_ask_clamped or no_bid_clamped or no_ask_clamped or mid_yes_clamped:
         invalid_reasons.append("out_of_range")
-
-    if ask < bid:
-        bid, ask = min(bid, ask), max(bid, ask)
+    if yes_bid is not None and yes_ask is not None and yes_ask < yes_bid:
         invalid_reasons.append("inverted_spread")
 
-    if mid < bid or mid > ask:
-        mid = (bid + ask) / 2
-        invalid_reasons.append("mid_outside_spread")
+    if mid_yes is None and yes_bid is not None and yes_ask is not None:
+        mid_yes = (yes_bid + yes_ask) / 2
 
-    spread_pct = 0.0
-    if mid > 0 and ask >= bid:
-        spread_pct = ((ask - bid) / max(mid, 0.0001)) * 100
+    spread_yes_pct = None
+    if mid_yes is not None and yes_bid is not None and yes_ask is not None and mid_yes > 0:
+        spread_yes_pct = ((yes_ask - yes_bid) / max(mid_yes, 0.0001)) * 100
 
     is_valid = not invalid_reasons
     return Quote(
-        bid=round(bid, 4),
-        ask=round(ask, 4),
-        mid=round(mid, 4),
-        last=round(last, 4),
-        spread_pct=round(spread_pct, 4),
+        ticker=ticker,
+        yes_bid=round(yes_bid, 4) if yes_bid is not None else None,
+        yes_ask=round(yes_ask, 4) if yes_ask is not None else None,
+        no_bid=round(no_bid, 4) if no_bid is not None else None,
+        no_ask=round(no_ask, 4) if no_ask is not None else None,
+        mid_yes=round(mid_yes, 4) if mid_yes is not None else None,
+        spread_yes_pct=round(spread_yes_pct, 4) if spread_yes_pct is not None else None,
+        ts_ms=ts_ms,
         valid=is_valid,
-        reason=reason or (invalid_reasons[0] if invalid_reasons else None),
+        reason_if_invalid=reason or (invalid_reasons[0] if invalid_reasons else None),
     )
 
 
 def normalize_quote(payload: dict) -> Quote:
-    bid = _extract_price(
+    ticker = payload.get("ticker") or payload.get("market_ticker") or payload.get("market_id") or ""
+    yes_bid, yes_bid_legacy = _extract_price(
         payload,
-        ["yes_bid_dollars", "bid_dollars", "bid_price_dollars"],
-        ["yes_bid", "bid", "bid_price"],
+        ["yes_bid_dollars", "bid_dollars", "yes_bid_price_dollars"],
+        ["yes_bid", "bid", "yes_bid_price"],
     )
-    ask = _extract_price(
+    yes_ask, yes_ask_legacy = _extract_price(
         payload,
-        ["yes_ask_dollars", "ask_dollars", "ask_price_dollars"],
-        ["yes_ask", "ask", "ask_price"],
+        ["yes_ask_dollars", "ask_dollars", "yes_ask_price_dollars"],
+        ["yes_ask", "ask", "yes_ask_price"],
     )
-    mid = _extract_price(
+    no_bid, no_bid_legacy = _extract_price(
         payload,
-        ["mid_price_dollars", "mid_dollars"],
-        ["mid_price"],
+        ["no_bid_dollars", "no_bid_price_dollars"],
+        ["no_bid", "no_bid_price"],
     )
-    last = _extract_price(
+    no_ask, no_ask_legacy = _extract_price(
         payload,
-        ["last_price_dollars", "last_dollars"],
-        ["last_price", "last"],
+        ["no_ask_dollars", "no_ask_price_dollars"],
+        ["no_ask", "no_ask_price"],
+    )
+    mid_yes, mid_legacy = _extract_price(
+        payload,
+        ["mid_price_dollars", "mid_dollars", "yes_mid_dollars"],
+        ["mid_price", "yes_mid"],
+    )
+    ts_ms = _normalize_timestamp(_first_present(payload, ["last_updated_ts", "ts", "timestamp", "last_price_time"]))
+    if ts_ms is not None and ts_ms < 1e12:
+        ts_ms *= 1000
+
+    if no_bid is None and yes_ask is not None:
+        no_bid = round(1.0 - yes_ask, 4)
+    if no_ask is None and yes_bid is not None:
+        no_ask = round(1.0 - yes_bid, 4)
+
+    if any([yes_bid_legacy, yes_ask_legacy, no_bid_legacy, no_ask_legacy, mid_legacy]):
+        log_event(
+            "kalshi_legacy_price_field",
+            {"ticker": ticker, "fields": "legacy_price_fields"},
+        )
+
+    return _normalize_quote_values(
+        ticker=ticker,
+        yes_bid=yes_bid,
+        yes_ask=yes_ask,
+        no_bid=no_bid,
+        no_ask=no_ask,
+        mid_yes=mid_yes,
+        ts_ms=ts_ms,
+        reason=None,
     )
 
-    return normalize_quote_values(bid=bid, ask=ask, mid=mid, last=last)
+
+def build_quote_from_prices(
+    ticker: str,
+    yes_bid: Optional[float],
+    yes_ask: Optional[float],
+    no_bid: Optional[float] = None,
+    no_ask: Optional[float] = None,
+    ts_ms: Optional[int] = None,
+) -> Quote:
+    if no_bid is None and yes_ask is not None:
+        no_bid = round(1.0 - yes_ask, 4)
+    if no_ask is None and yes_bid is not None:
+        no_ask = round(1.0 - yes_bid, 4)
+    mid_yes = None
+    if yes_bid is not None and yes_ask is not None:
+        mid_yes = (yes_bid + yes_ask) / 2
+    return _normalize_quote_values(
+        ticker=ticker,
+        yes_bid=yes_bid,
+        yes_ask=yes_ask,
+        no_bid=no_bid,
+        no_ask=no_ask,
+        mid_yes=mid_yes,
+        ts_ms=ts_ms,
+        reason=None,
+    )
 
 
 def normalize_market_meta(payload: dict, now_ts: Optional[int] = None) -> dict:
     volume = _first_present(payload, ["volume", "volume_dollars", "open_interest"]) or 0.0
     bid_depth = _first_present(payload, ["bid_depth", "yes_bid_depth", "bid_volume"]) or 0.0
     ask_depth = _first_present(payload, ["ask_depth", "yes_ask_depth", "ask_volume"]) or 0.0
-    close_ts = _normalize_timestamp(
-        _first_present(payload, ["close_ts", "close_time", "settlement_ts", "close_timestamp"])
-    )
+    close_ts = _normalize_timestamp(_first_present(payload, ["close_ts", "close_time", "close_timestamp"]))
+    settlement_ts = _normalize_timestamp(_first_present(payload, ["settlement_ts", "settlement_time"]))
     if now_ts is None:
         now_ts = int(datetime.now(tz=timezone.utc).timestamp())
     minutes_to_resolution = payload.get("minutes_to_expiry")
@@ -250,4 +301,5 @@ def normalize_market_meta(payload: dict, now_ts: Optional[int] = None) -> dict:
         "ask_depth": float(ask_depth),
         "minutes_to_resolution": float(minutes_to_resolution),
         "close_ts": close_ts,
+        "settlement_ts": settlement_ts,
     }
